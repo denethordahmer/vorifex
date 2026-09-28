@@ -1,12 +1,13 @@
 /* =========================================================================
-   VORIFEX'S TITHE — GAME SHELL (game.js) v2
-   Tabbed UI, achievement rendering, window banner, toasts.
+   VORIFEX'S TITHE — GAME SHELL (game.js) v3
+   Tabbed UI + audio hooks + settings wiring + achievement rendering.
    ========================================================================= */
 
 (function () {
   "use strict";
 
   const Engine = window.VorifexEngine;
+  const Audio  = window.VorifexAudio;
   const BigNum = Engine.BigNum;
 
   /* ---------------- DOM: top bar ---------------- */
@@ -37,7 +38,8 @@
   const views       = {
     tap: document.getElementById("viewTap"),
     upgrades: document.getElementById("viewUpgrades"),
-    achievements: document.getElementById("viewAchievements")
+    achievements: document.getElementById("viewAchievements"),
+    settings: document.getElementById("viewSettings")
   };
 
   /* ---------------- DOM: window banner / toasts ---------------- */
@@ -46,6 +48,13 @@
   const windowBannerMult  = document.getElementById("windowBannerMult");
   const windowBannerTimer = document.getElementById("windowBannerTimer");
   const toastStack        = document.getElementById("toastStack");
+
+  /* ---------------- DOM: settings ---------------- */
+  const toggleAudio     = document.getElementById("toggleAudio");
+  const audioStatusText = document.getElementById("audioStatusText");
+  const btnManualSave   = document.getElementById("btnManualSave");
+  const btnResetSave    = document.getElementById("btnResetSave");
+  const aboutLine       = document.getElementById("aboutLine");
 
   /* ---------------- DOM: save ---------------- */
   const saveStatus = document.getElementById("saveStatus");
@@ -99,7 +108,7 @@
     }
   }
 
-  /* ---------------- Sweet-spot sigma (visual only) ---------------- */
+  /* ---------------- Sigma (visual only) ---------------- */
   function computeSigma() {
     const state = Engine.state();
     const cfg = Engine.CONFIG.prestige;
@@ -126,7 +135,6 @@
     const sigma = computeSigma();
     tapFlash = Math.max(0, tapFlash - dtSec * 2.2);
 
-    // outer sigma ring
     const ringRadius = baseRadius + 26;
     ctx.beginPath();
     ctx.arc(cx, cy, ringRadius, 0, Math.PI * 2);
@@ -135,7 +143,6 @@
     ctx.lineWidth = 4 + sigma * 6;
     ctx.stroke();
 
-    // core
     const radius = baseRadius + pulse + tapFlash * 10;
     const grad = ctx.createRadialGradient(cx, cy - radius * 0.3, radius * 0.1, cx, cy, radius);
     grad.addColorStop(0, `rgba(210, 190, 255, ${0.9 + tapFlash * 0.1})`);
@@ -146,7 +153,6 @@
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // facets
     ctx.save();
     ctx.globalAlpha = 0.15 + tapFlash * 0.25;
     ctx.strokeStyle = "#ffffff";
@@ -190,6 +196,7 @@
     });
     if (tab === "achievements") renderAchievements();
     if (tab === "upgrades") updateUpgradeButtons();
+    if (tab === "settings") refreshSettingsUI();
   }
 
   tabButtons.forEach(btn => {
@@ -224,12 +231,13 @@
     btn.addEventListener("click", () => {
       const res = Engine.buyUpgrade(path);
       flashButton(btn, res.success);
+      if (Audio) Audio.playPurchase(res.success);
       updateHUD();
       updateUpgradeButtons();
     });
   });
 
-  /* ---------------- Achievement rendering ---------------- */
+  /* ---------------- Achievements rendering ---------------- */
   let achFilter = "all";
 
   achFilters.forEach(chip => {
@@ -251,7 +259,6 @@
     const passivePct = (Engine.achievementPassiveMultiplier() - 1) * 100;
     achPassivePill.textContent = `+${passivePct.toFixed(1)}% Prestige`;
 
-    // build list (only rebuild if filter changes OR count changes noticeably)
     const frag = document.createDocumentFragment();
 
     for (const def of Engine.ACHIEVEMENTS) {
@@ -287,7 +294,6 @@
       body.appendChild(nameEl);
       body.appendChild(descEl);
 
-      // progress (locked only)
       if (!isUnlocked) {
         let current = 0;
         try { current = def.check(state); } catch (e) { current = 0; }
@@ -331,7 +337,6 @@
     const range = Engine.critRange(state.levels.path1);
     statCritRange.textContent = `${range.min.toFixed(2)}x–${range.max.toFixed(2)}x`;
 
-    // prestige projection
     state.window.tick(now);
     const proj = Engine.getProjectionNow(now);
 
@@ -346,11 +351,9 @@
       statProjectionSub.textContent = parts.length ? parts.join(" · ") : "Base payout";
     }
 
-    // prestige button enable/disable
     const canPrestige = proj.visible && state.devotion.toNumber() > 0;
     btnPrestige.classList.toggle("disabled", !canPrestige);
 
-    // window banner
     if (state.window.active) {
       windowBanner.classList.remove("hidden");
       windowBannerLabel.textContent = state.window.label || "Window";
@@ -360,7 +363,6 @@
       windowBanner.classList.add("hidden");
     }
 
-    // passive pill (also refresh achievements tab if visible)
     if (activeTab === "achievements") {
       const passivePct = (Engine.achievementPassiveMultiplier() - 1) * 100;
       achPassivePill.textContent = `+${passivePct.toFixed(1)}% Prestige`;
@@ -368,6 +370,8 @@
   }
 
   /* ---------------- Input ---------------- */
+  let audioInitialized = false;
+
   function handleTap(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     const x = clientX - rect.left;
@@ -375,6 +379,23 @@
 
     const result = Engine.tap();
     tapFlash = 1;
+
+    // audio — initialize on first tap, play tap or crit sound
+    if (Audio) {
+      if (!audioInitialized) {
+        Audio.unlockAndStart();
+        Audio.setEnabled(Engine.getSetting("audioEnabled") !== false);
+        audioInitialized = true;
+        refreshSettingsUI();
+      }
+      if (result.hit) Audio.playCrit();
+      else Audio.playTap();
+
+      // Bound Hunger easter egg — ~1 in 1000 taps
+      if (Math.random() < 0.001) {
+        Audio.playHungerGlitch();
+      }
+    }
 
     const label = result.hit ? `+${result.multiplier.toFixed(2)}x CRIT!` : "+1";
     spawnParticle(x, y, label, result.hit);
@@ -389,12 +410,13 @@
     const state = Engine.state();
     if (state.devotion.toNumber() <= 0) return;
     const payout = Engine.prestige();
+    if (Audio) Audio.playPrestige();
     spawnParticle(cw / 2, ch / 2, `+${payout.toString()} Tithe!`, true);
     updateHUD();
     if (activeTab === "achievements") renderAchievements();
   });
 
-  /* ---------------- Toasts for new unlocks ---------------- */
+  /* ---------------- Toasts ---------------- */
   function drainToasts() {
     const list = Engine.popPendingUnlocks();
     if (!list.length) return;
@@ -416,9 +438,56 @@
       toast.appendChild(t3);
       toastStack.appendChild(toast);
       setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 3800);
+
+      if (Audio) Audio.playAchievement();
     }
     if (activeTab === "achievements") renderAchievements();
   }
+
+  /* ---------------- Settings wiring ---------------- */
+  function refreshSettingsUI() {
+    const enabled = Engine.getSetting("audioEnabled") !== false;
+    toggleAudio.setAttribute("aria-checked", enabled ? "true" : "false");
+
+    if (!audioInitialized) {
+      audioStatusText.textContent = "Inactive — will start on first tap.";
+    } else if (enabled) {
+      audioStatusText.textContent = "Active — ambient drone and effects playing.";
+    } else {
+      audioStatusText.textContent = "Muted — tap the toggle to re-enable.";
+    }
+
+    if (Audio && audioInitialized) {
+      Audio.setEnabled(enabled);
+    }
+  }
+
+  toggleAudio.addEventListener("click", () => {
+    const current = Engine.getSetting("audioEnabled") !== false;
+    const next = !current;
+    Engine.setSetting("audioEnabled", next);
+    if (Audio) Audio.setEnabled(next);
+    refreshSettingsUI();
+    Engine.saveState();
+  });
+
+  btnManualSave.addEventListener("click", () => {
+    const ok = Engine.saveState();
+    saveStatus.textContent = ok ? `Saved ${new Date().toLocaleTimeString()}` : "Save failed";
+    btnManualSave.textContent = ok ? "Saved!" : "Failed";
+    setTimeout(() => { btnManualSave.textContent = "Save Now"; }, 1200);
+  });
+
+  btnResetSave.addEventListener("click", () => {
+    const confirmed = window.confirm(
+      "Reset all progress? This cannot be undone."
+    );
+    if (!confirmed) return;
+    try {
+      localStorage.removeItem("vorifex_tithe_save_v3");
+    } catch (e) {}
+    window.location.reload();
+  });
 
   /* ---------------- Persistence ---------------- */
   function doSave() {
@@ -429,13 +498,31 @@
   Engine.loadState();
   saveStatus.textContent = "Loaded";
   switchTab("tap");
+  refreshSettingsUI();
 
   setInterval(doSave, 15000);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") doSave();
-    else Engine.update(Date.now());
+    if (document.visibilityState === "hidden") {
+      doSave();
+      if (Audio && Audio.isInitialized()) Audio.resume && Audio.resume();
+    } else {
+      Engine.update(Date.now());
+      if (Audio && Audio.isInitialized()) Audio.resume && Audio.resume();
+    }
   });
   window.addEventListener("beforeunload", doSave);
+
+  /* ---------------- Session-start sound ---------------- */
+  // fires on the very first tap after audio initializes (see handleTap)
+  // the session start sound is played once via a small flag below
+  let sessionStartPlayed = false;
+  function maybeSessionStart() {
+    if (sessionStartPlayed) return;
+    if (Audio && audioInitialized) {
+      Audio.playSessionStart();
+      sessionStartPlayed = true;
+    }
+  }
 
   /* ---------------- Main loop ---------------- */
   let lastFrameTs = performance.now();
@@ -450,8 +537,10 @@
     drawCore(dtSec);
     updateHUD();
     drainToasts();
+    maybeSessionStart();
 
-    // periodically refresh achievements list while open (so locked progress updates)
+    if (Audio && Audio.isInitialized()) Audio.tick(dtSec);
+
     if (activeTab === "achievements") {
       renderAchAccum += dtSec;
       if (renderAchAccum > 0.5) {

@@ -10,7 +10,6 @@
 
   <div id="app">
 
-    <!-- ============ TOP STAT BAR ============ -->
     <header id="topBar">
       <div class="topStat">
         <span class="topLabel">Devotion</span>
@@ -22,10 +21,8 @@
       </div>
     </header>
 
-    <!-- ============ TAB VIEWS ============ -->
     <main id="viewContainer">
 
-      <!-- --- TAP TAB --- -->
       <section class="view active" id="viewTap">
         <div id="canvasWrap">
           <canvas id="gameCanvas"></canvas>
@@ -56,7 +53,6 @@
         <button id="btnPrestige" class="actionBtn primary">PRESTIGE</button>
       </section>
 
-      <!-- --- UPGRADES TAB --- -->
       <section class="view" id="viewUpgrades">
         <div class="viewHeader">
           <h2>Pathways</h2>
@@ -100,7 +96,6 @@
         </button>
       </section>
 
-      <!-- --- ACHIEVEMENTS TAB --- -->
       <section class="view" id="viewAchievements">
         <div class="viewHeader">
           <h2>Achievements</h2>
@@ -121,7 +116,6 @@
         <div id="achList"></div>
       </section>
 
-      <!-- --- SETTINGS TAB --- -->
       <section class="view" id="viewSettings">
         <div class="viewHeader">
           <h2>Settings</h2>
@@ -179,7 +173,6 @@
 
     </main>
 
-    <!-- ============ BOTTOM TAB BAR ============ -->
     <nav id="tabBar">
       <button class="tabBtn active" data-tab="tap">
         <span class="tabIcon">◆</span>
@@ -199,17 +192,14 @@
       </button>
     </nav>
 
-    <!-- ============ WINDOW BANNER ============ -->
     <div id="windowBanner" class="hidden">
       <span id="windowBannerLabel">Window</span>
       <span id="windowBannerMult">x1.00</span>
       <span id="windowBannerTimer">0s</span>
     </div>
 
-    <!-- ============ UNLOCK TOASTS ============ -->
     <div id="toastStack"></div>
 
-    <!-- ============ SAVE FOOTER ============ -->
     <footer id="saveIndicator">
       <span id="saveStatus">Loaded</span>
     </footer>
