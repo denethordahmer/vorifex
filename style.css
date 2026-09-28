@@ -1,6 +1,6 @@
 /* =========================================================================
-   VORIFEX'S TITHE — style.css (v2)
-   Tabbed UI, dark theme, mobile-first, no external assets.
+   VORIFEX'S TITHE — style.css (v3)
+   Adds: Settings tab, toggle switch, small action buttons, danger zone.
    ========================================================================= */
 
 :root{
@@ -24,6 +24,7 @@
   --gold-glow: #ffd25766;
 
   --danger: #ff5c6a;
+  --danger-dim: #ff5c6a44;
   --success: #4ade80;
 
   --radius: 14px;
@@ -442,6 +443,116 @@ button{ font-family: inherit; }
   font-weight: 600;
 }
 
+/* ============ SETTINGS VIEW ============ */
+.settingsGroup{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 14px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.settingRow{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settingRow:last-child{ border-bottom: none; }
+
+.settingText{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settingName{
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settingDesc{
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
+/* Toggle switch */
+.toggleSwitch{
+  position: relative;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.toggleSwitch[aria-checked="true"]{
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+
+.toggleKnob{
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.18s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.toggleSwitch[aria-checked="true"] .toggleKnob{
+  transform: translateX(20px);
+  background: var(--accent-bright);
+}
+
+/* Small action buttons */
+.smallActionBtn{
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.08s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.smallActionBtn:active{ transform: scale(0.96); }
+
+.smallActionBtn:hover{
+  background: var(--panel-2);
+  border-color: var(--accent);
+}
+
+.smallActionBtn.danger{
+  color: var(--danger);
+  border-color: var(--danger-dim);
+  background: rgba(255, 92, 106, 0.08);
+}
+
+.smallActionBtn.danger:hover{
+  background: rgba(255, 92, 106, 0.16);
+  border-color: var(--danger);
+}
+
 /* ============ BOTTOM TAB BAR ============ */
 #tabBar{
   display: flex;
@@ -479,7 +590,7 @@ button{ font-family: inherit; }
 }
 
 .tabLabel{
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;

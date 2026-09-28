@@ -1,8 +1,7 @@
 /* =========================================================================
-   VORIFEX'S TITHE — MATH ENGINE (engine.js)
-   v2 — Adds 50-achievement system with Model C: passive + window burst.
+   VORIFEX'S TITHE — MATH ENGINE (engine.js) v3
+   Adds: persisted sound preference (settings.audioEnabled).
    Self-contained, client-side, no dependencies, no CDN, offline-safe.
-   Exposes a single global: window.VorifexEngine
    ========================================================================= */
 
 (function (global) {
@@ -163,7 +162,11 @@
     },
     synergy: { eta: 0.15 },
     projection: { threshold: 1 },
-    pacing: { targetD0: 500 }
+    pacing: { targetD0: 500 },
+    // settings defaults (new)
+    settings: {
+      audioEnabled: true
+    }
   };
 
   /* =======================================================================
@@ -351,19 +354,14 @@
 
   /* =======================================================================
      ACHIEVEMENTS — 50 TOTAL, LIFETIME, ONE-SHOT EACH
-     Model C: permanent passive Prestige multiplier + window burst on unlock.
      ======================================================================= */
-
-  // Helper to make achievement defs terse
   function A(id, name, tier, desc, check, target) {
     return { id, name, tier, desc, check, target };
   }
 
-  // tier shorthand: C=Common, R=Rare, E=Epic, L=Legendary, M=Mythic
   const TIER_MAP = { C: 0, R: 1, E: 2, L: 3, M: 4 };
 
   const ACHIEVEMENTS = [
-    // --- TAPPING (10) ---
     A("tap_10",       "First Contact",      "C", "Tap 10 times.",               s => s.tapCount, 10),
     A("tap_100",      "Getting Warm",       "C", "Tap 100 times.",              s => s.tapCount, 100),
     A("tap_500",      "Steady Hand",        "R", "Tap 500 times.",              s => s.tapCount, 500),
@@ -375,7 +373,6 @@
     A("tap_500000",   "Legendary Devotion", "M", "Tap 500,000 times.",          s => s.tapCount, 500000),
     A("tap_1000000",  "The Endless Tap",    "M", "Tap 1,000,000 times.",        s => s.tapCount, 1000000),
 
-    // --- PLAYTIME (8) ---
     A("time_1m",      "First Minute",       "C", "Play for 1 minute.",          s => s.playtimeSeconds, 60),
     A("time_5m",      "Settling In",        "C", "Play for 5 minutes.",         s => s.playtimeSeconds, 300),
     A("time_15m",     "Dedicated Moment",   "R", "Play for 15 minutes.",        s => s.playtimeSeconds, 900),
@@ -385,7 +382,6 @@
     A("time_72h",     "Three Days Strong",  "L", "Play for 72 hours.",          s => s.playtimeSeconds, 259200),
     A("time_168h",    "A Week of Tithe",    "M", "Play for 168 hours.",         s => s.playtimeSeconds, 604800),
 
-    // --- DEVOTION (RUN PEAK) (8) ---
     A("dev_100",      "Sparked",            "C", "Reach 100 Devotion in a run.",    s => s.runPeakDevotion, 100),
     A("dev_1000",     "Kindled",            "C", "Reach 1K Devotion in a run.",     s => s.runPeakDevotion, 1000),
     A("dev_10000",    "Blazing",            "R", "Reach 10K Devotion in a run.",    s => s.runPeakDevotion, 10000),
@@ -395,7 +391,6 @@
     A("dev_1b",       "Devotion Unbound",   "L", "Reach 1B Devotion in a run.",     s => s.runPeakDevotion, 1000000000),
     A("dev_1e12",     "Beyond Measure",     "M", "Reach 1T Devotion in a run.",     s => s.runPeakDevotion, 1e12),
 
-    // --- STASH (LIFETIME TOTAL) (6) ---
     A("stash_1",      "First Tithe",        "C", "Earn 1 Tithe Bullion total.",     s => s.lifetimeStash, 1),
     A("stash_100",    "Stacking Up",        "C", "Earn 100 Bullion total.",         s => s.lifetimeStash, 100),
     A("stash_10000",  "Serious Wealth",     "R", "Earn 10K Bullion total.",         s => s.lifetimeStash, 10000),
@@ -403,7 +398,6 @@
     A("stash_1b",     "Tithe Empire",       "L", "Earn 1B Bullion total.",          s => s.lifetimeStash, 1000000000),
     A("stash_1e15",   "Cosmic Wealth",      "M", "Earn 1e15 Bullion total.",        s => s.lifetimeStash, 1e15),
 
-    // --- PRESTIGE COUNT (7) ---
     A("pres_1",       "First Offering",     "C", "Prestige once.",                  s => s.totalPrestiges, 1),
     A("pres_5",       "Regular Giver",      "C", "Prestige 5 times.",               s => s.totalPrestiges, 5),
     A("pres_25",      "Faithful",           "R", "Prestige 25 times.",              s => s.totalPrestiges, 25),
@@ -412,20 +406,17 @@
     A("pres_2500",    "Cycle Master",       "L", "Prestige 2,500 times.",           s => s.totalPrestiges, 2500),
     A("pres_10000",   "Eternal Return",     "M", "Prestige 10,000 times.",          s => s.totalPrestiges, 10000),
 
-    // --- CRITS (5) ---
     A("crit_1",       "Lucky Strike",       "C", "Land 1 critical tap.",            s => s.critCount, 1),
     A("crit_100",     "Sharp Eye",          "C", "Land 100 critical taps.",         s => s.critCount, 100),
     A("crit_1000",    "Critical Mass",      "R", "Land 1,000 critical taps.",       s => s.critCount, 1000),
     A("crit_10000",   "Precision Devotion", "E", "Land 10,000 critical taps.",      s => s.critCount, 10000),
     A("crit_100000",  "Master of Chance",   "L", "Land 100,000 critical taps.",     s => s.critCount, 100000),
 
-    // --- WINDOWS (4) ---
     A("win_1",        "Window Opened",      "C", "Trigger your first window.",      s => s.windowsTriggered, 1),
     A("win_10",       "Frequent Flare",     "C", "Trigger 10 windows.",             s => s.windowsTriggered, 10),
     A("win_100",      "Window Weaver",      "R", "Trigger 100 windows.",            s => s.windowsTriggered, 100),
     A("win_500",      "The Opportunist",    "E", "Trigger 500 windows.",            s => s.windowsTriggered, 500),
 
-    // --- PATHWAYS (2) ---
     A("path_any5",    "Diversified",        "R", "Reach 5 total pathway levels.",   s => s.levels.path1 + s.levels.path2 + s.levels.path3, 5),
     A("path_any25",   "Path Walker",        "E", "Reach 25 total pathway levels.",  s => s.levels.path1 + s.levels.path2 + s.levels.path3, 25)
   ];
@@ -436,7 +427,7 @@
   /* =======================================================================
      GAME STATE
      ======================================================================= */
-  const STORAGE_KEY = "vorifex_tithe_save_v2";
+  const STORAGE_KEY = "vorifex_tithe_save_v3";
 
   function defaultState() {
     return {
@@ -447,7 +438,6 @@
       lastTick: Date.now(),
       totalPrestiges: 0,
 
-      // lifetime counters
       tapCount: 0,
       playtimeSeconds: 0,
       critCount: 0,
@@ -455,17 +445,17 @@
       runPeakDevotion: 0,
       lifetimeStash: 0,
 
-      // achievement tracking
-      achievementsUnlocked: [],   // array of ids
-      // pending notifications consumed by UI
-      pendingUnlocks: []          // array of ids, cleared by UI
+      achievementsUnlocked: [],
+      pendingUnlocks: [],
+
+      // settings (persisted)
+      settings: {
+        audioEnabled: CONFIG.settings.audioEnabled
+      }
     };
   }
 
   let state = defaultState();
-
-  // in-memory only (not saved) — used to detect threshold crossings cheaply
-  let _sessionStart = Date.now();
 
   function saveState() {
     const serial = {
@@ -481,7 +471,8 @@
       windowsTriggered: state.windowsTriggered,
       runPeakDevotion: state.runPeakDevotion,
       lifetimeStash: state.lifetimeStash,
-      achievementsUnlocked: state.achievementsUnlocked
+      achievementsUnlocked: state.achievementsUnlocked,
+      settings: state.settings
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serial));
@@ -497,7 +488,6 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) {
         state = defaultState();
-        _sessionStart = Date.now();
         return state;
       }
       const parsed = JSON.parse(raw);
@@ -515,21 +505,36 @@
         runPeakDevotion: parsed.runPeakDevotion || 0,
         lifetimeStash: parsed.lifetimeStash || 0,
         achievementsUnlocked: parsed.achievementsUnlocked || [],
-        pendingUnlocks: []
+        pendingUnlocks: [],
+        settings: Object.assign(
+          { audioEnabled: CONFIG.settings.audioEnabled },
+          parsed.settings || {}
+        )
       };
-      _sessionStart = Date.now();
       return state;
     } catch (err) {
       console.warn("VorifexEngine: load failed", err);
       state = defaultState();
-      _sessionStart = Date.now();
       return state;
     }
   }
 
   /* =======================================================================
-     PASSIVE PRESTIGE MULTIPLIER FROM ACHIEVEMENTS
-     Model C: sum of tier-scaled passive bonuses for every unlocked achievement.
+     SETTINGS
+     ======================================================================= */
+  function getSetting(key) {
+    if (!state.settings) state.settings = {};
+    return state.settings[key];
+  }
+
+  function setSetting(key, value) {
+    if (!state.settings) state.settings = {};
+    state.settings[key] = value;
+    return value;
+  }
+
+  /* =======================================================================
+     PASSIVE MULTIPLIER FROM ACHIEVEMENTS
      ======================================================================= */
   function achievementPassiveMultiplier() {
     let bonus = 0;
@@ -544,8 +549,6 @@
 
   /* =======================================================================
      ACHIEVEMENT EVALUATION
-     Called every frame (cheap) + after key events (tap, prestige).
-     Only evaluates not-yet-unlocked achievements.
      ======================================================================= */
   function evaluateAchievements(nowMs) {
     const unlockedSet = new Set(state.achievementsUnlocked);
@@ -557,13 +560,11 @@
       try { current = def.check(state); } catch (e) { continue; }
       if (typeof current !== "number" || !isFinite(current)) continue;
       if (current >= def.target) {
-        // unlock
         state.achievementsUnlocked.push(def.id);
         state.pendingUnlocks.push(def.id);
         unlockedSet.add(def.id);
         changed = true;
 
-        // window burst (Model C)
         const tier = getTierInfo(def.tier);
         state.window.activate(tier.difficulty, state.levels.path3, def.name, nowMs);
         state.windowsTriggered += 1;
@@ -589,7 +590,6 @@
     state.tapCount += 1;
     if (roll.hit) state.critCount += 1;
 
-    // track run peak for achievements
     const devNum = state.devotion.toNumber();
     if (isFinite(devNum) && devNum > state.runPeakDevotion) state.runPeakDevotion = devNum;
 
@@ -602,7 +602,6 @@
     state.lastTick = nowMs;
     state.window.tick(nowMs);
 
-    // playtime accumulation (only while tab is "active" — we just count real elapsed seconds capped)
     if (dtSeconds > 0 && dtSeconds < 5) {
       state.playtimeSeconds += dtSeconds;
     }
@@ -645,11 +644,8 @@
   }
 
   function prestige(nowMs = Date.now()) {
-    // base payout from current run
     const base = tithePayoutBase(state.devotion, state.stash, CONFIG.prestige);
-    // apply window multiplier if active
     const windowMult = state.window.getMultiplier();
-    // apply achievement passive multiplier (Model C — always on)
     const passiveMult = achievementPassiveMultiplier();
 
     let payout = base.mulScalar(windowMult * passiveMult);
@@ -657,7 +653,6 @@
     state.stash = state.stash.add(payout);
     state.lifetimeStash += payout.toNumber();
 
-    // reset run
     state.devotion = new BigNum(0, 0);
     state.runPeakDevotion = 0;
     state.totalPrestiges += 1;
@@ -713,6 +708,10 @@
     achievementPassiveMultiplier,
     evaluateAchievements,
     popPendingUnlocks,
+
+    // settings
+    getSetting,
+    setSetting,
 
     state: () => state,
     saveState,

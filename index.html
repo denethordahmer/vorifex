@@ -10,7 +10,7 @@
 
   <div id="app">
 
-    <!-- ============ TOP STAT BAR (always visible) ============ -->
+    <!-- ============ TOP STAT BAR ============ -->
     <header id="topBar">
       <div class="topStat">
         <span class="topLabel">Devotion</span>
@@ -118,7 +118,63 @@
           <button class="filterChip" data-filter="locked">Locked</button>
         </div>
 
-        <div id="achList"><!-- filled by game.js --></div>
+        <div id="achList"></div>
+      </section>
+
+      <!-- --- SETTINGS TAB --- -->
+      <section class="view" id="viewSettings">
+        <div class="viewHeader">
+          <h2>Settings</h2>
+          <p class="viewSub">Preferences for your Tithe.</p>
+        </div>
+
+        <div class="settingsGroup">
+          <div class="settingRow">
+            <div class="settingText">
+              <span class="settingName">Audio</span>
+              <span class="settingDesc">Ambient drone and interaction sounds.</span>
+            </div>
+            <button id="toggleAudio" class="toggleSwitch" role="switch" aria-checked="true">
+              <span class="toggleKnob"></span>
+            </button>
+          </div>
+
+          <div class="settingRow">
+            <div class="settingText">
+              <span class="settingName">Audio Status</span>
+              <span class="settingDesc" id="audioStatusText">Inactive — will start on first tap.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settingsGroup">
+          <div class="settingRow">
+            <div class="settingText">
+              <span class="settingName">Save</span>
+              <span class="settingDesc">Manually force a save of current progress.</span>
+            </div>
+            <button id="btnManualSave" class="smallActionBtn">Save Now</button>
+          </div>
+        </div>
+
+        <div class="settingsGroup">
+          <div class="settingRow">
+            <div class="settingText">
+              <span class="settingName">Danger Zone</span>
+              <span class="settingDesc">Permanently wipe all progress. Cannot be undone.</span>
+            </div>
+            <button id="btnResetSave" class="smallActionBtn danger">Reset Save</button>
+          </div>
+        </div>
+
+        <div class="settingsGroup">
+          <div class="settingRow">
+            <div class="settingText">
+              <span class="settingName">About</span>
+              <span class="settingDesc" id="aboutLine">Vorifex's Tithe — build v3</span>
+            </div>
+          </div>
+        </div>
       </section>
 
     </main>
@@ -137,9 +193,13 @@
         <span class="tabIcon">★</span>
         <span class="tabLabel">Awards</span>
       </button>
+      <button class="tabBtn" data-tab="settings">
+        <span class="tabIcon">⚙</span>
+        <span class="tabLabel">Settings</span>
+      </button>
     </nav>
 
-    <!-- ============ WINDOW BANNER (floats above) ============ -->
+    <!-- ============ WINDOW BANNER ============ -->
     <div id="windowBanner" class="hidden">
       <span id="windowBannerLabel">Window</span>
       <span id="windowBannerMult">x1.00</span>
@@ -157,6 +217,7 @@
   </div>
 
   <script src="engine.js"></script>
+  <script src="audio.js"></script>
   <script src="game.js"></script>
 </body>
 </html>
