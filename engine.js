@@ -1,7 +1,7 @@
 /* =========================================================================
    VORIFEX'S TITHE — MATH ENGINE (engine.js)
+   v2 — Adds 50-achievement system with Model C: passive + window burst.
    Self-contained, client-side, no dependencies, no CDN, offline-safe.
-   Drop into Replit root and include via: <script src="engine.js"></script>
    Exposes a single global: window.VorifexEngine
    ========================================================================= */
 
@@ -10,7 +10,6 @@
 
   /* =======================================================================
      SECTION 9 — LARGE NUMBERS (BigNum: mantissa/exponent, base 10)
-     Full internal precision, abbreviated display only at render time.
      ======================================================================= */
   class BigNum {
     constructor(mantissa = 0, exponent = 0) {
@@ -37,7 +36,6 @@
     }
 
     static fromLn(lnVal) {
-      // Reconstructs a BigNum from a natural-log value (safe for huge exponents)
       const e = Math.floor(lnVal / Math.LN10);
       const m = Math.exp(lnVal - e * Math.LN10);
       return new BigNum(m, e);
@@ -45,10 +43,7 @@
 
     clone() { return new BigNum(this.m, this.e); }
 
-    toNumber() {
-      // May legitimately overflow to Infinity for extreme exponents — acceptable
-      return this.m * Math.pow(10, this.e);
-    }
+    toNumber() { return this.m * Math.pow(10, this.e); }
 
     add(other) {
       other = other instanceof BigNum ? other : BigNum.fromNumber(other);
@@ -57,7 +52,7 @@
       let big = this, small = other;
       if (other.e > this.e) { big = other; small = this; }
       const diff = big.e - small.e;
-      if (diff > 15) return big.clone(); // small term negligible
+      if (diff > 15) return big.clone();
       const combinedM = big.m + small.m / Math.pow(10, diff);
       return new BigNum(combinedM, big.e);
     }
@@ -89,12 +84,11 @@
       return Math.log(this.m) + this.e * Math.LN10;
     }
 
-    // ln(x+1) helper — accurate for both tiny and huge BigNums
     lnPlus1() {
       if (this.e < 0 || (this.e === 0 && this.m < 5)) {
         return Math.log(this.toNumber() + 1);
       }
-      return this.ln(); // +1 is negligible at this scale
+      return this.ln();
     }
 
     cmp(other) {
@@ -125,66 +119,55 @@
   }
 
   /* =======================================================================
-     CONFIG — tunable constants for every system
+     CONFIG
      ======================================================================= */
   const CONFIG = {
-    // §1 Prestige Conversion (hybrid sigmoid)
     prestige: {
-      k0: 3.0,        // base steepness
-      alpha: 0.35,     // steepness growth with ln(S+1)  -> tightening
-      mu0: 4.0,        // base midpoint (calibrated by calibratePacing())
-      beta: 0.55,      // midpoint drift with ln(S+1)    -> tightening
-      c: 1.0,          // baseline scalar (calibrated)
-      gamma: 6.0       // sweet-spot bonus magnitude
+      k0: 3.0,
+      alpha: 0.35,
+      mu0: 4.0,
+      beta: 0.55,
+      c: 1.0,
+      gamma: 6.0
     },
-    // §2 Stash -> Devotion Generation Boost
     stashBoost: {
-      Gbase: 1.0,      // base devotion/sec before boosts
-      M: 1.05,         // multiplicative top-layer base
+      Gbase: 1.0,
+      M: 1.05,
       sqrtScale: 1.0
     },
-    // §3 Pathway Cost Scaling
     costs: {
-      path1: { C1: 10 },                       // Cost1(n) = C1 * n^1.5
-      path2: { C2: 15, r: 1.13 },               // Cost2(n) = C2 * r^n
-      path3: { f0: 0.02, growth: 1.3 }          // Cost3(n,S) = S * f0 * growth^n
+      path1: { C1: 10 },
+      path2: { C2: 15, r: 1.13 },
+      path3: { f0: 0.02, growth: 1.3 }
     },
-    // Path 2 — Extraction Rate multiplier on generation
-    pathway2: { rho: 0.08 },                    // Mult(n2) = (1+rho)^n2
-    // §4 Achievement Windows
+    pathway2: { rho: 0.08 },
     achievements: {
-      baseDuration: 30,       // seconds (Q10)
-      durationPerLevel: 4,    // seconds added per Path-3 level (Q9)
-      diffExponent: 0.8,      // Mult(diff) = 1 + diff^0.8
-      graceSeconds: 2,        // overlap grace on refresh
+      baseDuration: 30,
+      durationPerLevel: 4,
+      diffExponent: 0.8,
+      graceSeconds: 2,
       tiers: [
-        { name: "Common",    difficulty: 1  },
-        { name: "Rare",      difficulty: 4  },
-        { name: "Epic",      difficulty: 10 },
-        { name: "Legendary", difficulty: 25 },
-        { name: "Mythic",    difficulty: 60 }
+        { name: "Common",    difficulty: 1,  passiveBonus: 0.001 },
+        { name: "Rare",      difficulty: 4,  passiveBonus: 0.005 },
+        { name: "Epic",      difficulty: 10, passiveBonus: 0.015 },
+        { name: "Legendary", difficulty: 25, passiveBonus: 0.04  },
+        { name: "Mythic",    difficulty: 60, passiveBonus: 0.10  }
       ]
     },
-    // §5 Critical Chance Mechanics
     crit: {
-      c0: 0.05,        // base crit chance
-      delta: 0.03,     // approach rate toward 100%
-      minMult: 1.5,    // fixed floor
-      baseMaxMult: 3,  // base ceiling
-      omega: 0.6       // ceiling growth per Path-1 level^0.7
+      c0: 0.05,
+      delta: 0.03,
+      minMult: 1.5,
+      baseMaxMult: 3,
+      omega: 0.6
     },
-    // §6 Path 3 — Tithe Synergy (logarithmic, stacks on §2)
     synergy: { eta: 0.15 },
-    // §7 Prestige Projection
-    projection: { threshold: 1 }, // BigNum(1) — visible once payout >= this
-    // §8 Pacing anchor targets (used only by calibratePacing)
-    pacing: { targetD0: 500 } // ~5-10 min of tapping at default rates
+    projection: { threshold: 1 },
+    pacing: { targetD0: 500 }
   };
 
   /* =======================================================================
-     §1 — PRESTIGE CONVERSION (Devotion -> Tithe Bullion)
-     Hybrid sigmoid: slow start, steep sweet-spot middle, flattening extremes.
-     Progressive tightening: k(S) and mu(S) both rise with ln(S+1).
+     §1 — PRESTIGE CONVERSION
      ======================================================================= */
   function sigmoid(x, k, mu) {
     return 1 / (1 + Math.exp(-k * (x - mu)));
@@ -201,13 +184,12 @@
     const x = D.lnPlus1();
     const { k, mu } = prestigeSigmaParams(S, cfg);
     const sig = sigmoid(x, k, mu);
-    // c * D^0.5 * (1 + gamma * sigma)
     const sqrtD = D.pow(0.5);
     return sqrtD.mulScalar(cfg.c * (1 + cfg.gamma * sig));
   }
 
   /* =======================================================================
-     §4 — ACHIEVEMENT-TRIGGERED PRESTIGE MULTIPLIER WINDOWS
+     §4 — ACHIEVEMENT WINDOW
      ======================================================================= */
   function windowMultiplierForDifficulty(difficulty, cfg = CONFIG.achievements) {
     return 1 + Math.pow(difficulty, cfg.diffExponent);
@@ -218,18 +200,22 @@
   }
 
   class PrestigeWindow {
-    constructor() { this.active = false; this.difficulty = 0; this.multiplier = 1; this.endTime = 0; }
+    constructor() { this.active = false; this.difficulty = 0; this.multiplier = 1; this.endTime = 0; this.label = ""; }
 
-    activate(difficulty, level3, nowMs, cfg = CONFIG.achievements) {
+    activate(difficulty, level3, label, nowMs, cfg = CONFIG.achievements) {
       const mult = windowMultiplierForDifficulty(difficulty, cfg);
       const durationMs = windowDurationSeconds(level3, cfg) * 1000;
-      // Refresh-only stacking with short grace overlap
       if (this.active && nowMs < this.endTime + cfg.graceSeconds * 1000) {
         this.endTime = Math.max(this.endTime, nowMs + durationMs);
-        this.multiplier = Math.max(this.multiplier, mult);
+        if (mult > this.multiplier) {
+          this.multiplier = mult;
+          this.difficulty = difficulty;
+          this.label = label;
+        }
       } else {
         this.difficulty = difficulty;
         this.multiplier = mult;
+        this.label = label;
         this.endTime = nowMs + durationMs;
       }
       this.active = true;
@@ -242,10 +228,14 @@
     getMultiplier() { return this.active ? this.multiplier : 1; }
     remainingSeconds(nowMs) { return this.active ? Math.max(0, (this.endTime - nowMs) / 1000) : 0; }
 
-    toJSON() { return { active: this.active, difficulty: this.difficulty, multiplier: this.multiplier, endTime: this.endTime }; }
+    toJSON() { return { active: this.active, difficulty: this.difficulty, multiplier: this.multiplier, endTime: this.endTime, label: this.label }; }
     static fromJSON(o) {
       const w = new PrestigeWindow();
-      if (o) { w.active = o.active; w.difficulty = o.difficulty; w.multiplier = o.multiplier; w.endTime = o.endTime; }
+      if (o) {
+        w.active = o.active; w.difficulty = o.difficulty;
+        w.multiplier = o.multiplier; w.endTime = o.endTime;
+        w.label = o.label || "";
+      }
       return w;
     }
   }
@@ -257,9 +247,7 @@
   }
 
   /* =======================================================================
-     §2 — STASH -> DEVOTION GENERATION BOOST
-     Logarithmic foundation with multiplicative top layer; exponent-coupled
-     so the two layers interact rather than simply add.
+     §2 — STASH → DEVOTION GENERATION BOOST
      ======================================================================= */
   function stashBoostMultiplier(S, cfg = CONFIG.stashBoost) {
     const Blog = 1 + S.lnPlus1();
@@ -268,7 +256,7 @@
   }
 
   /* =======================================================================
-     §6 — PATH 3: TITHE SYNERGY (logarithmic, stacks multiplicatively on §2)
+     §6 — PATH 3 SYNERGY
      ======================================================================= */
   function synergyMultiplier(S, level3, cfg = CONFIG.synergy) {
     const lnS1 = S.lnPlus1();
@@ -276,13 +264,12 @@
   }
 
   /* =======================================================================
-     PATH 2 — EXTRACTION RATE (accelerates devotion generation directly)
+     PATH 2 — EXTRACTION
      ======================================================================= */
   function extractionMultiplier(level2, cfg = CONFIG.pathway2) {
     return Math.pow(1 + cfg.rho, level2);
   }
 
-  /* Combined devotion generation rate per second */
   function devotionGenerationRate(S, level2, level3, cfg = CONFIG) {
     const { total: stashMult } = stashBoostMultiplier(S, cfg.stashBoost);
     const synergyMult = synergyMultiplier(S, level3, cfg.synergy);
@@ -291,30 +278,25 @@
   }
 
   /* =======================================================================
-     §3 — PATHWAY COST SCALING (three distinct curves)
+     §3 — PATHWAY COSTS
      ======================================================================= */
   function cost1(n, cfg = CONFIG.costs.path1) {
-    // Slow polynomial: gentle climb, crits stay accessible
     return BigNum.fromNumber(cfg.C1 * Math.pow(n, 1.5));
   }
 
   function cost2(n, cfg = CONFIG.costs.path2) {
-    // Exponential, computed via ln-space to stay safe at large n
     const lnVal = Math.log(cfg.C2) + n * Math.log(cfg.r);
     return BigNum.fromLn(lnVal);
   }
 
   function cost3(n, S, cfg = CONFIG.costs.path3) {
-    // % of current Stash — ties cost directly to the economy it boosts
     const lnFn = Math.log(cfg.f0) + n * Math.log(cfg.growth);
     const fn = BigNum.fromLn(lnFn);
     return S.mul(fn);
   }
 
   /* =======================================================================
-     §5 — CRITICAL CHANCE MECHANICS
-     Asymptotic chance approaching (never reaching) 100%.
-     Variable min/max multiplier range; ceiling widens with Path-1 levels.
+     §5 — CRIT
      ======================================================================= */
   function critChance(level1, cfg = CONFIG.crit) {
     return 1 - (1 - cfg.c0) * Math.pow(1 - cfg.delta, level1);
@@ -335,7 +317,7 @@
   }
 
   /* =======================================================================
-     §7 — PRESTIGE PROJECTION (dynamic threshold visibility)
+     §7 — PRESTIGE PROJECTION
      ======================================================================= */
   function isProjectionVisible(D, S, cfg = CONFIG) {
     const payout = tithePayoutBase(D, S, cfg.prestige);
@@ -354,15 +336,11 @@
   }
 
   /* =======================================================================
-     §8 — PACING ANCHOR CALIBRATION
-     Solves prestige.c and prestige.mu0 so that:
-       - the sigmoid's climb centers near a ~5-10min Devotion value (D0)
-       - the resulting first payout can afford Cost1(1) (tier 1, Path 1)
-     Call once at game init (or when you change base rates).
+     §8 — PACING CALIBRATION
      ======================================================================= */
   function calibratePacing(D0 = CONFIG.pacing.targetD0, cfg = CONFIG.prestige, costCfg = CONFIG.costs.path1) {
     cfg.mu0 = Math.log(D0 + 1);
-    const sigmaAtMu0 = 0.5; // midpoint of any logistic curve
+    const sigmaAtMu0 = 0.5;
     const D0big = BigNum.fromNumber(D0);
     const sqrtD0 = D0big.pow(0.5).toNumber();
     const payoutFactor = sqrtD0 * (1 + cfg.gamma * sigmaAtMu0);
@@ -372,9 +350,93 @@
   }
 
   /* =======================================================================
-     GAME STATE — ties all systems together + localStorage persistence
+     ACHIEVEMENTS — 50 TOTAL, LIFETIME, ONE-SHOT EACH
+     Model C: permanent passive Prestige multiplier + window burst on unlock.
      ======================================================================= */
-  const STORAGE_KEY = "vorifex_tithe_save_v1";
+
+  // Helper to make achievement defs terse
+  function A(id, name, tier, desc, check, target) {
+    return { id, name, tier, desc, check, target };
+  }
+
+  // tier shorthand: C=Common, R=Rare, E=Epic, L=Legendary, M=Mythic
+  const TIER_MAP = { C: 0, R: 1, E: 2, L: 3, M: 4 };
+
+  const ACHIEVEMENTS = [
+    // --- TAPPING (10) ---
+    A("tap_10",       "First Contact",      "C", "Tap 10 times.",               s => s.tapCount, 10),
+    A("tap_100",      "Getting Warm",       "C", "Tap 100 times.",              s => s.tapCount, 100),
+    A("tap_500",      "Steady Hand",        "R", "Tap 500 times.",              s => s.tapCount, 500),
+    A("tap_1000",     "Committed",          "R", "Tap 1,000 times.",            s => s.tapCount, 1000),
+    A("tap_5000",     "Devoted Fingers",    "E", "Tap 5,000 times.",            s => s.tapCount, 5000),
+    A("tap_10000",    "Hand of the Faithful","E","Tap 10,000 times.",           s => s.tapCount, 10000),
+    A("tap_50000",    "Obsessive",          "L", "Tap 50,000 times.",           s => s.tapCount, 50000),
+    A("tap_100000",   "Tireless",           "L", "Tap 100,000 times.",          s => s.tapCount, 100000),
+    A("tap_500000",   "Legendary Devotion", "M", "Tap 500,000 times.",          s => s.tapCount, 500000),
+    A("tap_1000000",  "The Endless Tap",    "M", "Tap 1,000,000 times.",        s => s.tapCount, 1000000),
+
+    // --- PLAYTIME (8) ---
+    A("time_1m",      "First Minute",       "C", "Play for 1 minute.",          s => s.playtimeSeconds, 60),
+    A("time_5m",      "Settling In",        "C", "Play for 5 minutes.",         s => s.playtimeSeconds, 300),
+    A("time_15m",     "Dedicated Moment",   "R", "Play for 15 minutes.",        s => s.playtimeSeconds, 900),
+    A("time_1h",      "An Hour of Faith",   "R", "Play for 1 hour.",            s => s.playtimeSeconds, 3600),
+    A("time_6h",      "Half a Day",         "E", "Play for 6 hours.",           s => s.playtimeSeconds, 21600),
+    A("time_24h",     "A Full Day",         "L", "Play for 24 hours.",          s => s.playtimeSeconds, 86400),
+    A("time_72h",     "Three Days Strong",  "L", "Play for 72 hours.",          s => s.playtimeSeconds, 259200),
+    A("time_168h",    "A Week of Tithe",    "M", "Play for 168 hours.",         s => s.playtimeSeconds, 604800),
+
+    // --- DEVOTION (RUN PEAK) (8) ---
+    A("dev_100",      "Sparked",            "C", "Reach 100 Devotion in a run.",    s => s.runPeakDevotion, 100),
+    A("dev_1000",     "Kindled",            "C", "Reach 1K Devotion in a run.",     s => s.runPeakDevotion, 1000),
+    A("dev_10000",    "Blazing",            "R", "Reach 10K Devotion in a run.",    s => s.runPeakDevotion, 10000),
+    A("dev_100000",   "Inferno",            "R", "Reach 100K Devotion in a run.",   s => s.runPeakDevotion, 100000),
+    A("dev_1m",       "Million Strong",     "E", "Reach 1M Devotion in a run.",     s => s.runPeakDevotion, 1000000),
+    A("dev_100m",     "Hundred Million",    "E", "Reach 100M Devotion in a run.",   s => s.runPeakDevotion, 100000000),
+    A("dev_1b",       "Devotion Unbound",   "L", "Reach 1B Devotion in a run.",     s => s.runPeakDevotion, 1000000000),
+    A("dev_1e12",     "Beyond Measure",     "M", "Reach 1T Devotion in a run.",     s => s.runPeakDevotion, 1e12),
+
+    // --- STASH (LIFETIME TOTAL) (6) ---
+    A("stash_1",      "First Tithe",        "C", "Earn 1 Tithe Bullion total.",     s => s.lifetimeStash, 1),
+    A("stash_100",    "Stacking Up",        "C", "Earn 100 Bullion total.",         s => s.lifetimeStash, 100),
+    A("stash_10000",  "Serious Wealth",     "R", "Earn 10K Bullion total.",         s => s.lifetimeStash, 10000),
+    A("stash_1m",     "Tithe Barony",       "E", "Earn 1M Bullion total.",          s => s.lifetimeStash, 1000000),
+    A("stash_1b",     "Tithe Empire",       "L", "Earn 1B Bullion total.",          s => s.lifetimeStash, 1000000000),
+    A("stash_1e15",   "Cosmic Wealth",      "M", "Earn 1e15 Bullion total.",        s => s.lifetimeStash, 1e15),
+
+    // --- PRESTIGE COUNT (7) ---
+    A("pres_1",       "First Offering",     "C", "Prestige once.",                  s => s.totalPrestiges, 1),
+    A("pres_5",       "Regular Giver",      "C", "Prestige 5 times.",               s => s.totalPrestiges, 5),
+    A("pres_25",      "Faithful",           "R", "Prestige 25 times.",              s => s.totalPrestiges, 25),
+    A("pres_100",     "Devoted Cycle",      "R", "Prestige 100 times.",             s => s.totalPrestiges, 100),
+    A("pres_500",     "The Reborn",         "E", "Prestige 500 times.",             s => s.totalPrestiges, 500),
+    A("pres_2500",    "Cycle Master",       "L", "Prestige 2,500 times.",           s => s.totalPrestiges, 2500),
+    A("pres_10000",   "Eternal Return",     "M", "Prestige 10,000 times.",          s => s.totalPrestiges, 10000),
+
+    // --- CRITS (5) ---
+    A("crit_1",       "Lucky Strike",       "C", "Land 1 critical tap.",            s => s.critCount, 1),
+    A("crit_100",     "Sharp Eye",          "C", "Land 100 critical taps.",         s => s.critCount, 100),
+    A("crit_1000",    "Critical Mass",      "R", "Land 1,000 critical taps.",       s => s.critCount, 1000),
+    A("crit_10000",   "Precision Devotion", "E", "Land 10,000 critical taps.",      s => s.critCount, 10000),
+    A("crit_100000",  "Master of Chance",   "L", "Land 100,000 critical taps.",     s => s.critCount, 100000),
+
+    // --- WINDOWS (4) ---
+    A("win_1",        "Window Opened",      "C", "Trigger your first window.",      s => s.windowsTriggered, 1),
+    A("win_10",       "Frequent Flare",     "C", "Trigger 10 windows.",             s => s.windowsTriggered, 10),
+    A("win_100",      "Window Weaver",      "R", "Trigger 100 windows.",            s => s.windowsTriggered, 100),
+    A("win_500",      "The Opportunist",    "E", "Trigger 500 windows.",            s => s.windowsTriggered, 500),
+
+    // --- PATHWAYS (2) ---
+    A("path_any5",    "Diversified",        "R", "Reach 5 total pathway levels.",   s => s.levels.path1 + s.levels.path2 + s.levels.path3, 5),
+    A("path_any25",   "Path Walker",        "E", "Reach 25 total pathway levels.",  s => s.levels.path1 + s.levels.path2 + s.levels.path3, 25)
+  ];
+
+  function getAchievementById(id) { return ACHIEVEMENTS.find(a => a.id === id) || null; }
+  function getTierInfo(tierKey) { return CONFIG.achievements.tiers[TIER_MAP[tierKey]]; }
+
+  /* =======================================================================
+     GAME STATE
+     ======================================================================= */
+  const STORAGE_KEY = "vorifex_tithe_save_v2";
 
   function defaultState() {
     return {
@@ -382,13 +444,28 @@
       stash: new BigNum(0, 0),
       levels: { path1: 0, path2: 0, path3: 0 },
       window: new PrestigeWindow(),
-      achievementsUnlocked: [],
       lastTick: Date.now(),
-      totalPrestiges: 0
+      totalPrestiges: 0,
+
+      // lifetime counters
+      tapCount: 0,
+      playtimeSeconds: 0,
+      critCount: 0,
+      windowsTriggered: 0,
+      runPeakDevotion: 0,
+      lifetimeStash: 0,
+
+      // achievement tracking
+      achievementsUnlocked: [],   // array of ids
+      // pending notifications consumed by UI
+      pendingUnlocks: []          // array of ids, cleared by UI
     };
   }
 
   let state = defaultState();
+
+  // in-memory only (not saved) — used to detect threshold crossings cheaply
+  let _sessionStart = Date.now();
 
   function saveState() {
     const serial = {
@@ -396,9 +473,15 @@
       stash: state.stash.toJSON(),
       levels: state.levels,
       window: state.window.toJSON(),
-      achievementsUnlocked: state.achievementsUnlocked,
       lastTick: state.lastTick,
-      totalPrestiges: state.totalPrestiges
+      totalPrestiges: state.totalPrestiges,
+      tapCount: state.tapCount,
+      playtimeSeconds: state.playtimeSeconds,
+      critCount: state.critCount,
+      windowsTriggered: state.windowsTriggered,
+      runPeakDevotion: state.runPeakDevotion,
+      lifetimeStash: state.lifetimeStash,
+      achievementsUnlocked: state.achievementsUnlocked
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serial));
@@ -412,32 +495,105 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) { state = defaultState(); return state; }
+      if (!raw) {
+        state = defaultState();
+        _sessionStart = Date.now();
+        return state;
+      }
       const parsed = JSON.parse(raw);
       state = {
         devotion: BigNum.fromJSON(parsed.devotion),
         stash: BigNum.fromJSON(parsed.stash),
         levels: parsed.levels || { path1: 0, path2: 0, path3: 0 },
         window: PrestigeWindow.fromJSON(parsed.window),
-        achievementsUnlocked: parsed.achievementsUnlocked || [],
         lastTick: parsed.lastTick || Date.now(),
-        totalPrestiges: parsed.totalPrestiges || 0
+        totalPrestiges: parsed.totalPrestiges || 0,
+        tapCount: parsed.tapCount || 0,
+        playtimeSeconds: parsed.playtimeSeconds || 0,
+        critCount: parsed.critCount || 0,
+        windowsTriggered: parsed.windowsTriggered || 0,
+        runPeakDevotion: parsed.runPeakDevotion || 0,
+        lifetimeStash: parsed.lifetimeStash || 0,
+        achievementsUnlocked: parsed.achievementsUnlocked || [],
+        pendingUnlocks: []
       };
+      _sessionStart = Date.now();
       return state;
     } catch (err) {
-      console.warn("VorifexEngine: load failed, using defaults", err);
+      console.warn("VorifexEngine: load failed", err);
       state = defaultState();
+      _sessionStart = Date.now();
       return state;
     }
   }
 
-  /* ---- Core gameplay operations built on the math above ---- */
+  /* =======================================================================
+     PASSIVE PRESTIGE MULTIPLIER FROM ACHIEVEMENTS
+     Model C: sum of tier-scaled passive bonuses for every unlocked achievement.
+     ======================================================================= */
+  function achievementPassiveMultiplier() {
+    let bonus = 0;
+    for (const id of state.achievementsUnlocked) {
+      const def = getAchievementById(id);
+      if (!def) continue;
+      const tier = getTierInfo(def.tier);
+      bonus += tier.passiveBonus;
+    }
+    return 1 + bonus;
+  }
 
+  /* =======================================================================
+     ACHIEVEMENT EVALUATION
+     Called every frame (cheap) + after key events (tap, prestige).
+     Only evaluates not-yet-unlocked achievements.
+     ======================================================================= */
+  function evaluateAchievements(nowMs) {
+    const unlockedSet = new Set(state.achievementsUnlocked);
+    let changed = false;
+
+    for (const def of ACHIEVEMENTS) {
+      if (unlockedSet.has(def.id)) continue;
+      let current;
+      try { current = def.check(state); } catch (e) { continue; }
+      if (typeof current !== "number" || !isFinite(current)) continue;
+      if (current >= def.target) {
+        // unlock
+        state.achievementsUnlocked.push(def.id);
+        state.pendingUnlocks.push(def.id);
+        unlockedSet.add(def.id);
+        changed = true;
+
+        // window burst (Model C)
+        const tier = getTierInfo(def.tier);
+        state.window.activate(tier.difficulty, state.levels.path3, def.name, nowMs);
+        state.windowsTriggered += 1;
+      }
+    }
+    return changed;
+  }
+
+  function popPendingUnlocks() {
+    const list = state.pendingUnlocks.slice();
+    state.pendingUnlocks.length = 0;
+    return list.map(id => getAchievementById(id)).filter(Boolean);
+  }
+
+  /* =======================================================================
+     GAMEPLAY OPS
+     ======================================================================= */
   function tap() {
     const roll = rollCrit(state.levels.path1);
-    const baseTapValue = 1; // flat tap value; tune as desired
+    const baseTapValue = 1;
     const gain = baseTapValue * roll.multiplier;
     state.devotion = state.devotion.add(BigNum.fromNumber(gain));
+    state.tapCount += 1;
+    if (roll.hit) state.critCount += 1;
+
+    // track run peak for achievements
+    const devNum = state.devotion.toNumber();
+    if (isFinite(devNum) && devNum > state.runPeakDevotion) state.runPeakDevotion = devNum;
+
+    evaluateAchievements(Date.now());
     return roll;
   }
 
@@ -446,10 +602,20 @@
     state.lastTick = nowMs;
     state.window.tick(nowMs);
 
+    // playtime accumulation (only while tab is "active" — we just count real elapsed seconds capped)
+    if (dtSeconds > 0 && dtSeconds < 5) {
+      state.playtimeSeconds += dtSeconds;
+    }
+
     const rate = devotionGenerationRate(state.stash, state.levels.path2, state.levels.path3);
-    if (dtSeconds > 0) {
+    if (dtSeconds > 0 && dtSeconds < 5) {
       state.devotion = state.devotion.add(BigNum.fromNumber(rate * dtSeconds));
     }
+
+    const devNum = state.devotion.toNumber();
+    if (isFinite(devNum) && devNum > state.runPeakDevotion) state.runPeakDevotion = devNum;
+
+    evaluateAchievements(nowMs);
     return { dtSeconds, rate };
   }
 
@@ -474,84 +640,91 @@
 
     state.stash = state.stash.sub(price);
     state.levels["path" + path] = currentLevel + 1;
+    evaluateAchievements(Date.now());
     return { success: true, newLevel: currentLevel + 1, price };
   }
 
-  function triggerAchievement(difficulty, nowMs = Date.now()) {
-    state.window.activate(difficulty, state.levels.path3, nowMs);
-    return state.window;
-  }
-
   function prestige(nowMs = Date.now()) {
-    const payout = tithePayoutWithWindow(state.devotion, state.stash, state.window);
+    // base payout from current run
+    const base = tithePayoutBase(state.devotion, state.stash, CONFIG.prestige);
+    // apply window multiplier if active
+    const windowMult = state.window.getMultiplier();
+    // apply achievement passive multiplier (Model C — always on)
+    const passiveMult = achievementPassiveMultiplier();
+
+    let payout = base.mulScalar(windowMult * passiveMult);
+
     state.stash = state.stash.add(payout);
+    state.lifetimeStash += payout.toNumber();
+
+    // reset run
     state.devotion = new BigNum(0, 0);
+    state.runPeakDevotion = 0;
     state.totalPrestiges += 1;
     state.lastTick = nowMs;
+
+    evaluateAchievements(nowMs);
     return payout;
   }
 
   function getProjectionNow(nowMs = Date.now()) {
     state.window.tick(nowMs);
-    return getProjection(state.devotion, state.stash, state.window);
+    const base = tithePayoutBase(state.devotion, state.stash, CONFIG.prestige);
+    const windowMult = state.window.getMultiplier();
+    const passiveMult = achievementPassiveMultiplier();
+    const boosted = base.mulScalar(windowMult * passiveMult);
+    return {
+      visible: base.gte(BigNum.fromNumber(CONFIG.projection.threshold)),
+      base,
+      boosted,
+      windowActive: state.window.active,
+      windowMult,
+      passiveMult
+    };
   }
 
   /* =======================================================================
      PUBLIC API
      ======================================================================= */
   global.VorifexEngine = {
-    // classes / config
     BigNum,
     CONFIG,
     PrestigeWindow,
+    ACHIEVEMENTS,
+    getAchievementById,
+    getTierInfo,
+    TIER_MAP,
 
-    // §1 prestige math
     tithePayoutBase,
     tithePayoutWithWindow,
-
-    // §2 stash boost
     stashBoostMultiplier,
-
-    // §3 costs
     cost1, cost2, cost3,
-
-    // §4 achievement windows
     windowMultiplierForDifficulty,
     windowDurationSeconds,
-
-    // §5 crit
     critChance, critRange, rollCrit,
-
-    // §6 synergy
     synergyMultiplier,
-
-    // path 2 extraction
     extractionMultiplier,
     devotionGenerationRate,
-
-    // §7 projection
     isProjectionVisible,
     getProjection,
     getProjectionNow,
-
-    // §8 pacing calibration
     calibratePacing,
 
-    // state & persistence
+    achievementPassiveMultiplier,
+    evaluateAchievements,
+    popPendingUnlocks,
+
     state: () => state,
     saveState,
     loadState,
     defaultState,
 
-    // gameplay actions
     tap,
     update,
     buyUpgrade,
-    triggerAchievement,
     prestige
   };
 
-  // Auto-calibrate pacing anchor on load using default targets
   calibratePacing();
 
 })(typeof window !== "undefined" ? window : globalThis);

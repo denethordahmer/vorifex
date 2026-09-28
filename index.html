@@ -10,78 +10,146 @@
 
   <div id="app">
 
-    <header id="statsPanel">
-      <div class="stat-row">
-        <div class="stat">
-          <span class="label">Devotion</span>
-          <span class="value" id="statDevotion">0</span>
-        </div>
-        <div class="stat">
-          <span class="label">Tithe Stash</span>
-          <span class="value" id="statStash">0</span>
-        </div>
+    <!-- ============ TOP STAT BAR (always visible) ============ -->
+    <header id="topBar">
+      <div class="topStat">
+        <span class="topLabel">Devotion</span>
+        <span class="topValue" id="statDevotion">0</span>
       </div>
-
-      <div class="stat-row">
-        <div class="stat">
-          <span class="label">Gen Rate</span>
-          <span class="value" id="statRate">0/s</span>
-        </div>
-        <div class="stat">
-          <span class="label">Crit Chance</span>
-          <span class="value" id="statCritChance">0%</span>
-        </div>
-        <div class="stat">
-          <span class="label">Crit Range</span>
-          <span class="value" id="statCritRange">1.00x - 1.00x</span>
-        </div>
-      </div>
-
-      <div class="stat-row">
-        <div class="stat wide">
-          <span class="label">Achievement Window</span>
-          <span class="value" id="statWindow">inactive</span>
-        </div>
-      </div>
-
-      <div class="stat-row">
-        <div class="stat wide">
-          <span class="label">Prestige Projection</span>
-          <span class="value" id="statProjection">Locked</span>
-        </div>
+      <div class="topStat">
+        <span class="topLabel">Tithe Stash</span>
+        <span class="topValue" id="statStash">0</span>
       </div>
     </header>
 
-    <main id="canvasWrap">
-      <canvas id="gameCanvas"></canvas>
-      <div id="tapHint">TAP THE CORE</div>
+    <!-- ============ TAB VIEWS ============ -->
+    <main id="viewContainer">
+
+      <!-- --- TAP TAB --- -->
+      <section class="view active" id="viewTap">
+        <div id="canvasWrap">
+          <canvas id="gameCanvas"></canvas>
+          <div id="tapHint">TAP THE CORE</div>
+        </div>
+
+        <div id="tapStats">
+          <div class="miniStat">
+            <span class="miniLabel">Gen Rate</span>
+            <span class="miniValue" id="statRate">0/s</span>
+          </div>
+          <div class="miniStat">
+            <span class="miniLabel">Crit Chance</span>
+            <span class="miniValue" id="statCritChance">0%</span>
+          </div>
+          <div class="miniStat">
+            <span class="miniLabel">Crit Range</span>
+            <span class="miniValue" id="statCritRange">1.00x–1.00x</span>
+          </div>
+        </div>
+
+        <div id="projectionBox">
+          <span class="projLabel">Prestige Projection</span>
+          <span class="projValue" id="statProjection">Locked</span>
+          <span class="projSub" id="statProjectionSub"></span>
+        </div>
+
+        <button id="btnPrestige" class="actionBtn primary">PRESTIGE</button>
+      </section>
+
+      <!-- --- UPGRADES TAB --- -->
+      <section class="view" id="viewUpgrades">
+        <div class="viewHeader">
+          <h2>Pathways</h2>
+          <p class="viewSub">Spend Tithe Bullion to strengthen your runs.</p>
+        </div>
+
+        <button class="upgradeCard" id="btnPath1" data-path="1">
+          <div class="upHead">
+            <span class="upTitle">Path 1 — Critical Chance</span>
+            <span class="upLevel" id="lvlPath1">Lv. 0</span>
+          </div>
+          <span class="upDesc">Raises crit chance and widens the crit multiplier range.</span>
+          <div class="upFoot">
+            <span class="upCost" id="costPath1">Cost: —</span>
+            <span class="upCTA">Purchase</span>
+          </div>
+        </button>
+
+        <button class="upgradeCard" id="btnPath2" data-path="2">
+          <div class="upHead">
+            <span class="upTitle">Path 2 — Extraction Rate</span>
+            <span class="upLevel" id="lvlPath2">Lv. 0</span>
+          </div>
+          <span class="upDesc">Directly multiplies Devotion generation per second.</span>
+          <div class="upFoot">
+            <span class="upCost" id="costPath2">Cost: —</span>
+            <span class="upCTA">Purchase</span>
+          </div>
+        </button>
+
+        <button class="upgradeCard" id="btnPath3" data-path="3">
+          <div class="upHead">
+            <span class="upTitle">Path 3 — Tithe Synergy</span>
+            <span class="upLevel" id="lvlPath3">Lv. 0</span>
+          </div>
+          <span class="upDesc">Amplifies the Stash → generation link. Also lengthens achievement windows.</span>
+          <div class="upFoot">
+            <span class="upCost" id="costPath3">Cost: —</span>
+            <span class="upCTA">Purchase</span>
+          </div>
+        </button>
+      </section>
+
+      <!-- --- ACHIEVEMENTS TAB --- -->
+      <section class="view" id="viewAchievements">
+        <div class="viewHeader">
+          <h2>Achievements</h2>
+          <p class="viewSub">
+            Lifetime milestones. Each unlock grants a permanent Prestige bonus
+            <span class="pill" id="achPassivePill">+0.0%</span>
+            and fires a temporary window burst.
+          </p>
+          <p class="viewSub2"><span id="achProgressText">0 / 50 unlocked</span></p>
+        </div>
+
+        <div id="achFilters">
+          <button class="filterChip active" data-filter="all">All</button>
+          <button class="filterChip" data-filter="unlocked">Unlocked</button>
+          <button class="filterChip" data-filter="locked">Locked</button>
+        </div>
+
+        <div id="achList"><!-- filled by game.js --></div>
+      </section>
+
     </main>
 
-    <section id="upgrades">
-      <button class="upgradeBtn" id="btnPath1" data-path="1">
-        <span class="upTitle">Path 1: Critical Chance</span>
-        <span class="upLevel" id="lvlPath1">Lv. 0</span>
-        <span class="upCost" id="costPath1">Cost: —</span>
+    <!-- ============ BOTTOM TAB BAR ============ -->
+    <nav id="tabBar">
+      <button class="tabBtn active" data-tab="tap">
+        <span class="tabIcon">◆</span>
+        <span class="tabLabel">Tap</span>
       </button>
-
-      <button class="upgradeBtn" id="btnPath2" data-path="2">
-        <span class="upTitle">Path 2: Extraction Rate</span>
-        <span class="upLevel" id="lvlPath2">Lv. 0</span>
-        <span class="upCost" id="costPath2">Cost: —</span>
+      <button class="tabBtn" data-tab="upgrades">
+        <span class="tabIcon">▲</span>
+        <span class="tabLabel">Upgrades</span>
       </button>
-
-      <button class="upgradeBtn" id="btnPath3" data-path="3">
-        <span class="upTitle">Path 3: Tithe Synergy</span>
-        <span class="upLevel" id="lvlPath3">Lv. 0</span>
-        <span class="upCost" id="costPath3">Cost: —</span>
+      <button class="tabBtn" data-tab="achievements">
+        <span class="tabIcon">★</span>
+        <span class="tabLabel">Awards</span>
       </button>
-    </section>
+    </nav>
 
-    <section id="actions">
-      <button id="btnPrestige" class="actionBtn primary">PRESTIGE</button>
-      <button id="btnDebugAchievement" class="actionBtn debug">Debug: Trigger Window</button>
-    </section>
+    <!-- ============ WINDOW BANNER (floats above) ============ -->
+    <div id="windowBanner" class="hidden">
+      <span id="windowBannerLabel">Window</span>
+      <span id="windowBannerMult">x1.00</span>
+      <span id="windowBannerTimer">0s</span>
+    </div>
 
+    <!-- ============ UNLOCK TOASTS ============ -->
+    <div id="toastStack"></div>
+
+    <!-- ============ SAVE FOOTER ============ -->
     <footer id="saveIndicator">
       <span id="saveStatus">Loaded</span>
     </footer>
