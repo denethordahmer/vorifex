@@ -1,56 +1,111 @@
 /* =========================================================================
-   VORIFEX'S TITHE — AUDIO ENGINE (audio.js) v1
-   Synthesized soundscape via Web Audio API. No files, no CDN, offline-safe.
-
-   Ambient layer: "The Chamber of Lapsed Hours" — evolving drone that adds
-   layers as the player's Prestige count rises (cadet halls opening).
-
-   Exposes global: window.VorifexAudio
-   Depends on: window.VorifexEngine (for state reads only — no writes)
+   VORIFEX'S TITHE — AUDIO ENGINE (audio.js) v2
+   "Cold Machine Temple" — melodic rhythmic loops + synthesized SFX.
+   Two background tracks: THE TURNING (default) and THE VIGIL (post-prestige).
+   No audio files, no CDN, offline-safe. Exposes window.VorifexAudio.
    ========================================================================= */
 
 (function (global) {
   "use strict";
 
-  /* =======================================================================
-     BROWSER SUPPORT / GLOBAL STATE
-     ======================================================================= */
-  let ctx = null;                 // AudioContext
-  let masterGain = null;          // global output
-  let ambientGain = null;         // ambient bus
-  let sfxGain = null;             // one-shot sfx bus
+  /* =====================  GLOBAL STATE  ===================== */
+  let ctx = null;
+  let masterGain = null;
+  let musicGain = null;
+  let sfxGain = null;
 
   let initialized = false;
-  let ambientRunning = false;
-  let enabled = true;             // toggled by settings (persisted elsewhere)
+  let enabled = true;
 
-  // ambient layers currently active (keyed by prestige tier index)
-  const activeAmbientLayers = new Set();
-  let ambientNodes = [];          // tracked for teardown/rebuild
-  let ambientLfo = null;
-  let ambientLfoGain = null;
+  // music scheduler state
+  let musicRunning = false;
+  let schedulerInterval = null;
+  let nextNoteTime = 0;
+  let currentStep = 0;
+  let currentChordIndex = 0;
+  let totalSteps = 0;
+  let phraseCount = 0;
+  let currentTrack = "turning";
+  let vigilTimeout = null;
 
-  /* =======================================================================
-     VOLUME CONFIG
-     ======================================================================= */
+  /* =====================  CONFIG  ===================== */
   const VOL = {
     master: 0.55,
-    ambient: 0.28,
-    sfx: 0.55,
+    music: 0.32,
+    sfx: 0.6,
+    kick: 0.55,
+    snare: 0.22,
+    hat: 0.05,
+    bell: 0.32,
+    organ: 0.26,
+    deepBell: 0.42,
     tap: 0.35,
     crit: 0.5,
     purchase: 0.5,
     prestige: 0.6,
     achievement: 0.5,
-    window: 0.35,
+    windowEnd: 0.35,
     record: 0.5,
     sessionStart: 0.4,
     hunger: 0.45
   };
 
-  /* =======================================================================
-     LAZY INIT — must be called from a user gesture (first tap)
-     ======================================================================= */
+  const BPM = 72;
+  const STEPS_PER_BEAT = 2;
+  const STEPS_PER_PHRASE = 16;
+  const SECONDS_PER_STEP = 60 / BPM / STEPS_PER_BEAT;
+  const LOOKAHEAD_MS = 25;
+  const SCHEDULE_AHEAD_S = 0.12;
+
+  /* =====================  MUSIC PATTERNS  ===================== */
+  const TRACKS = {
+    turning: {
+      kick:  [0, 4, 8, 12],
+      snare: [2, 6, 10, 14],
+      hat:   [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],
+      melody: [
+        { step: 0,  freq: 440.00 }, // A4
+        { step: 2,  freq: 523.25 }, // C5
+        { step: 3,  freq: 659.25 }, // E5
+        { step: 4,  freq: 587.33 }, // D5
+        { step: 6,  freq: 523.25 }, // C5
+        { step: 8,  freq: 493.88 }, // B4
+        { step: 10, freq: 440.00 }, // A4
+        { step: 11, freq: 329.63 }, // E4
+        { step: 12, freq: 392.00 }, // G4
+        { step: 14, freq: 440.00 }  // A4
+      ],
+      chords: [
+        { root: 110.00, fifth: 164.81, octave: 220.00 }, // Am
+        { root: 87.31,  fifth: 130.81, octave: 174.61 }, // F
+        { root: 130.81, fifth: 196.00, octave: 261.63 }, // C
+        { root: 98.00,  fifth: 146.83, octave: 196.00 }  // G
+      ],
+      deepBellEvery: 3 // phrases
+    },
+    vigil: {
+      kick:  [0, 6, 8, 14],
+      snare: [4, 12],
+      hat:   [0,2,4,6,8,10,12,14],
+      melody: [
+        { step: 0,  freq: 329.63 }, // E4
+        { step: 4,  freq: 440.00 }, // A4
+        { step: 6,  freq: 493.88 }, // B4
+        { step: 8,  freq: 329.63 }, // E4
+        { step: 12, freq: 440.00 }, // A4
+        { step: 14, freq: 392.00 }  // G4
+      ],
+      chords: [
+        { root: 55.00, fifth: 82.41,  octave: 110.00 },
+        { root: 43.65, fifth: 65.41,  octave: 87.31  },
+        { root: 65.41, fifth: 98.00,  octave: 130.81 },
+        { root: 49.00, fifth: 73.42,  octave: 98.00  }
+      ],
+      deepBellEvery: 2
+    }
+  };
+
+  /* =====================  INIT / RESUME  ===================== */
   function init() {
     if (initialized) return true;
     const AC = global.AudioContext || global.webkitAudioContext;
@@ -58,20 +113,16 @@
       console.warn("VorifexAudio: Web Audio API not supported");
       return false;
     }
-    try {
-      ctx = new AC();
-    } catch (e) {
-      console.warn("VorifexAudio: AudioContext creation failed", e);
-      return false;
-    }
+    try { ctx = new AC(); }
+    catch (e) { console.warn("VorifexAudio: AudioContext creation failed", e); return false; }
 
     masterGain = ctx.createGain();
-    masterGain.gain.value = enabled ? VOL.master : 0;
+    masterGain.gain.value = enabled ? VOL.master : 0.0001;
     masterGain.connect(ctx.destination);
 
-    ambientGain = ctx.createGain();
-    ambientGain.gain.value = VOL.ambient;
-    ambientGain.connect(masterGain);
+    musicGain = ctx.createGain();
+    musicGain.gain.value = VOL.music;
+    musicGain.connect(masterGain);
 
     sfxGain = ctx.createGain();
     sfxGain.gain.value = VOL.sfx;
@@ -83,564 +134,492 @@
 
   function resume() {
     if (!ctx) return;
-    if (ctx.state === "suspended") {
-      ctx.resume().catch(() => {});
-    }
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
   }
 
-  /* =======================================================================
-     UTILITIES
-     ======================================================================= */
+  /* =====================  UTIL  ===================== */
   function now() { return ctx.currentTime; }
 
-  function safeDisconnect(node) {
-    try { if (node && node.disconnect) node.disconnect(); } catch (e) {}
-  }
-
-  // envelope helper — attack + decay on a gain node
-  function applyEnvelope(gainNode, t0, attack, decay, peak, sustainFloor) {
+  function env(gainNode, t0, attack, decay, peak, floor) {
     const g = gainNode.gain;
+    const f = floor === undefined ? 0.0001 : floor;
     g.cancelScheduledValues(t0);
     g.setValueAtTime(0.0001, t0);
     g.exponentialRampToValueAtTime(Math.max(0.0001, peak), t0 + attack);
-    g.exponentialRampToValueAtTime(
-      Math.max(0.0001, sustainFloor !== undefined ? sustainFloor : 0.0001),
-      t0 + attack + decay
-    );
+    g.exponentialRampToValueAtTime(Math.max(0.0001, f), t0 + attack + decay);
   }
 
-  /* =======================================================================
-     SFX — TAP (The Turning of the Staff)
-     Short, dry, low metallic click. ~60ms. Never annoying.
-     ======================================================================= */
+  /* =====================  INSTRUMENTS  ===================== */
+  function playKick(t, vol) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(90, t);
+    osc.frequency.exponentialRampToValueAtTime(38, t + 0.11);
+
+    const g = ctx.createGain();
+    env(g, t, 0.003, 0.24, vol);
+
+    osc.connect(g);
+    g.connect(musicGain);
+    osc.start(t);
+    osc.stop(t + 0.30);
+
+    // metallic click
+    const click = ctx.createBufferSource();
+    const buf = ctx.createBuffer(1, 240, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+    click.buffer = buf;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 1400;
+    bp.Q.value = 2;
+
+    const cg = ctx.createGain();
+    cg.gain.setValueAtTime(vol * 0.4, t);
+    cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+
+    click.connect(bp); bp.connect(cg); cg.connect(musicGain);
+    click.start(t); click.stop(t + 0.04);
+  }
+
+  function playSnare(t, vol) {
+    const noise = ctx.createBufferSource();
+    const len = Math.floor(ctx.sampleRate * 0.2);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1);
+    noise.buffer = buf;
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = "bandpass";
+    hp.frequency.value = 2200;
+    hp.Q.value = 1.2;
+
+    const ng = ctx.createGain();
+    env(ng, t, 0.002, 0.16, vol);
+
+    noise.connect(hp); hp.connect(ng); ng.connect(musicGain);
+    noise.start(t); noise.stop(t + 0.2);
+
+    // metallic ring underneath
+    const osc = ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = 195;
+    const og = ctx.createGain();
+    env(og, t, 0.002, 0.09, vol * 0.5);
+    osc.connect(og); og.connect(musicGain);
+    osc.start(t); osc.stop(t + 0.11);
+  }
+
+  function playHat(t, vol) {
+    const noise = ctx.createBufferSource();
+    const len = Math.floor(ctx.sampleRate * 0.05);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    noise.buffer = buf;
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 6500;
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+
+    noise.connect(hp); hp.connect(g); g.connect(musicGain);
+    noise.start(t); noise.stop(t + 0.04);
+  }
+
+  function playBell(t, freq, vol) {
+    // fundamental
+    const o1 = ctx.createOscillator();
+    o1.type = "triangle";
+    o1.frequency.value = freq;
+
+    // bell partial (slightly sharp, characteristic of struck metal)
+    const o2 = ctx.createOscillator();
+    o2.type = "sine";
+    o2.frequency.value = freq * 2.01;
+
+    const g2 = ctx.createGain();
+    g2.gain.value = 0.32;
+
+    const g = ctx.createGain();
+    env(g, t, 0.004, 1.5, vol);
+
+    o1.connect(g);
+    o2.connect(g2); g2.connect(g);
+    g.connect(musicGain);
+
+    o1.start(t); o1.stop(t + 1.6);
+    o2.start(t); o2.stop(t + 1.6);
+  }
+
+  function playOrgan(t, freq, dur, vol) {
+    const o1 = ctx.createOscillator(); o1.type = "sine"; o1.frequency.value = freq;
+    const o2 = ctx.createOscillator(); o2.type = "sine"; o2.frequency.value = freq * 2;
+    const o3 = ctx.createOscillator(); o3.type = "sine"; o3.frequency.value = freq * 1.5;
+
+    const g2 = ctx.createGain(); g2.gain.value = 0.4;
+    const g3 = ctx.createGain(); g3.gain.value = 0.2;
+
+    const g = ctx.createGain();
+    const a = Math.min(0.35, dur * 0.15);
+    const r = Math.min(0.6, dur * 0.3);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + a);
+    g.gain.setValueAtTime(vol, t + dur - r);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    o1.connect(g);
+    o2.connect(g2); g2.connect(g);
+    o3.connect(g3); g3.connect(g);
+    g.connect(musicGain);
+
+    o1.start(t); o1.stop(t + dur + 0.05);
+    o2.start(t); o2.stop(t + dur + 0.05);
+    o3.start(t); o3.stop(t + dur + 0.05);
+  }
+
+  function playDeepBell(t, vol) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(58, t);
+    osc.frequency.exponentialRampToValueAtTime(42, t + 3.5);
+
+    const g = ctx.createGain();
+    env(g, t, 0.02, 3.6, vol);
+
+    osc.connect(g); g.connect(musicGain);
+    osc.start(t); osc.stop(t + 3.8);
+
+    // shimmer partial
+    const shim = ctx.createOscillator();
+    shim.type = "triangle";
+    shim.frequency.value = 1180;
+    const sg = ctx.createGain();
+    env(sg, t, 0.01, 1.2, vol * 0.15);
+    shim.connect(sg); sg.connect(musicGain);
+    shim.start(t); shim.stop(t + 1.3);
+  }
+
+  /* =====================  SCHEDULER  ===================== */
+  function scheduleStep(step, t) {
+    const track = TRACKS[currentTrack];
+    const chord = track.chords[currentChordIndex];
+
+    if (track.kick.indexOf(step) !== -1)  playKick(t, VOL.kick);
+    if (track.snare.indexOf(step) !== -1) playSnare(t, VOL.snare);
+    if (track.hat.indexOf(step) !== -1)   playHat(t, VOL.hat);
+
+    // melody notes
+    for (let i = 0; i < track.melody.length; i++) {
+      const n = track.melody[i];
+      if (n.step === step) playBell(t, n.freq, VOL.bell);
+    }
+
+    // bass pulse on kick hits + chord change at phrase start
+    if (track.kick.indexOf(step) !== -1) {
+      playOrgan(t, chord.root, 0.5, VOL.organ);
+    }
+
+    // deep bell at phrase boundaries
+    if (step === 0 && phraseCount % track.deepBellEvery === 0) {
+      playDeepBell(t, VOL.deepBell);
+    }
+  }
+
+  function advanceStep() {
+    currentStep++;
+    totalSteps++;
+    if (currentStep >= STEPS_PER_PHRASE) {
+      currentStep = 0;
+      phraseCount++;
+      currentChordIndex = (currentChordIndex + 1) % 4;
+    }
+    nextNoteTime += SECONDS_PER_STEP;
+  }
+
+  function schedulerTick() {
+    if (!ctx || !musicRunning) return;
+    while (nextNoteTime < ctx.currentTime + SCHEDULE_AHEAD_S) {
+      scheduleStep(currentStep, nextNoteTime);
+      advanceStep();
+    }
+  }
+
+  /* =====================  MUSIC CONTROL  ===================== */
+  function startMusic() {
+    if (!initialized || musicRunning) return;
+    musicRunning = true;
+    currentStep = 0;
+    currentChordIndex = 0;
+    totalSteps = 0;
+    phraseCount = 0;
+    nextNoteTime = ctx.currentTime + 0.15;
+    if (schedulerInterval) clearInterval(schedulerInterval);
+    schedulerInterval = setInterval(schedulerTick, LOOKAHEAD_MS);
+  }
+
+  function stopMusic() {
+    musicRunning = false;
+    if (schedulerInterval) {
+      clearInterval(schedulerInterval);
+      schedulerInterval = null;
+    }
+  }
+
+  function playVigilFor(seconds) {
+    currentTrack = "vigil";
+    if (vigilTimeout) clearTimeout(vigilTimeout);
+    vigilTimeout = setTimeout(() => { currentTrack = "turning"; }, seconds * 1000);
+  }
+
+  function tick(dtSec) {
+    // no-op; scheduler runs on its own interval
+  }
+
+  /* =====================  SFX  ===================== */
   function playTap() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
-    // Body: short triangle thud
+    const t = now();
     const osc = ctx.createOscillator();
     osc.type = "triangle";
-    osc.frequency.setValueAtTime(220, t0);
-    osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.05);
-
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.exponentialRampToValueAtTime(90, t + 0.05);
     const g = ctx.createGain();
-    applyEnvelope(g, t0, 0.002, 0.055, VOL.tap);
+    env(g, t, 0.002, 0.055, VOL.tap);
+    osc.connect(g); g.connect(sfxGain);
+    osc.start(t); osc.stop(t + 0.08);
 
-    osc.connect(g);
-    g.connect(sfxGain);
-    osc.start(t0);
-    osc.stop(t0 + 0.08);
-
-    // Click transient: very short noise burst
-    const noise = ctx.createBufferSource();
-    const buf = ctx.createBuffer(1, 480, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) {
-      data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
-    }
-    noise.buffer = buf;
-
-    const noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = "bandpass";
-    noiseFilter.frequency.value = 1800;
-    noiseFilter.Q.value = 1.4;
-
-    const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.12, t0);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.02);
-
-    noise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
-    noiseGain.connect(sfxGain);
-    noise.start(t0);
-    noise.stop(t0 + 0.03);
+    const n = ctx.createBufferSource();
+    const b = ctx.createBuffer(1, 480, ctx.sampleRate);
+    const d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+    n.buffer = b;
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1800; bp.Q.value = 1.4;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.12, t);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
+    n.connect(bp); bp.connect(ng); ng.connect(sfxGain);
+    n.start(t); n.stop(t + 0.03);
   }
 
-  /* =======================================================================
-     SFX — CRIT (The Sovereign's Mark Flares)
-     Doubled click + bright silver ping.
-     ======================================================================= */
   function playCrit() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
-    // Two short thuds, pitched up a step
-    [280, 340].forEach((freq, idx) => {
-      const osc = ctx.createOscillator();
-      osc.type = "triangle";
-      const start = t0 + idx * 0.025;
-      osc.frequency.setValueAtTime(freq, start);
-      osc.frequency.exponentialRampToValueAtTime(freq * 0.5, start + 0.05);
-
+    const t = now();
+    [280, 340].forEach((f, i) => {
+      const o = ctx.createOscillator();
+      o.type = "triangle";
+      const s = t + i * 0.025;
+      o.frequency.setValueAtTime(f, s);
+      o.frequency.exponentialRampToValueAtTime(f * 0.5, s + 0.05);
       const g = ctx.createGain();
-      applyEnvelope(g, start, 0.002, 0.05, VOL.crit * 0.6);
-
-      osc.connect(g);
-      g.connect(sfxGain);
-      osc.start(start);
-      osc.stop(start + 0.09);
+      env(g, s, 0.002, 0.05, VOL.crit * 0.6);
+      o.connect(g); g.connect(sfxGain);
+      o.start(s); o.stop(s + 0.09);
     });
-
-    // Silver ping (triangle high)
-    const ping = ctx.createOscillator();
-    ping.type = "triangle";
-    ping.frequency.setValueAtTime(2400, t0);
-    ping.frequency.exponentialRampToValueAtTime(3600, t0 + 0.08);
-
-    const pingGain = ctx.createGain();
-    applyEnvelope(pingGain, t0, 0.003, 0.13, VOL.crit);
-
-    ping.connect(pingGain);
-    pingGain.connect(sfxGain);
-    ping.start(t0);
-    ping.stop(t0 + 0.16);
+    const p = ctx.createOscillator();
+    p.type = "triangle";
+    p.frequency.setValueAtTime(2400, t);
+    p.frequency.exponentialRampToValueAtTime(3600, t + 0.08);
+    const pg = ctx.createGain();
+    env(pg, t, 0.003, 0.13, VOL.crit);
+    p.connect(pg); pg.connect(sfxGain);
+    p.start(t); p.stop(t + 0.16);
   }
 
-  /* =======================================================================
-     SFX — PURCHASE (The Binding of the Shard)
-     Low iron thunk + lead-grey fade.
-     ======================================================================= */
   function playPurchase(success) {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
+    const t = now();
     if (success) {
-      // Heavy thunk
-      const osc = ctx.createOscillator();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(140, t0);
-      osc.frequency.exponentialRampToValueAtTime(55, t0 + 0.12);
-
+      // heavy machine latch
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.setValueAtTime(160, t);
+      o.frequency.exponentialRampToValueAtTime(48, t + 0.14);
       const g = ctx.createGain();
-      applyEnvelope(g, t0, 0.004, 0.35, VOL.purchase);
+      env(g, t, 0.003, 0.38, VOL.purchase);
+      o.connect(g); g.connect(sfxGain);
+      o.start(t); o.stop(t + 0.42);
 
-      osc.connect(g);
-      g.connect(sfxGain);
-      osc.start(t0);
-      osc.stop(t0 + 0.4);
-
-      // Grey tone layer underneath
-      const grey = ctx.createOscillator();
-      grey.type = "triangle";
-      grey.frequency.value = 180;
-      const greyGain = ctx.createGain();
-      applyEnvelope(greyGain, t0 + 0.02, 0.05, 0.4, VOL.purchase * 0.4);
-      grey.connect(greyGain);
-      greyGain.connect(sfxGain);
-      grey.start(t0 + 0.02);
-      grey.stop(t0 + 0.5);
+      // metal strike transient
+      const s = ctx.createOscillator();
+      s.type = "triangle";
+      s.frequency.value = 880;
+      const sg = ctx.createGain();
+      env(sg, t, 0.001, 0.06, VOL.purchase * 0.35);
+      s.connect(sg); sg.connect(sfxGain);
+      s.start(t); s.stop(t + 0.08);
     } else {
-      // Denied: dull low buzz, very short
-      const osc = ctx.createOscillator();
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(110, t0);
-      osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.08);
-
-      const lp = ctx.createBiquadFilter();
-      lp.type = "lowpass";
-      lp.frequency.value = 400;
-
+      const o = ctx.createOscillator();
+      o.type = "sawtooth";
+      o.frequency.setValueAtTime(110, t);
+      o.frequency.exponentialRampToValueAtTime(85, t + 0.09);
+      const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 400;
       const g = ctx.createGain();
-      applyEnvelope(g, t0, 0.005, 0.09, VOL.purchase * 0.3);
-
-      osc.connect(lp);
-      lp.connect(g);
-      g.connect(sfxGain);
-      osc.start(t0);
-      osc.stop(t0 + 0.12);
+      env(g, t, 0.005, 0.1, VOL.purchase * 0.3);
+      o.connect(lp); lp.connect(g); g.connect(sfxGain);
+      o.start(t); o.stop(t + 0.13);
     }
   }
 
-  /* =======================================================================
-     SFX — PRESTIGE (The Rendering)
-     Big ceremonial event. Rising sweep → silence → deep resonance.
-     Three bell strikes evoke Vorifex turning three times.
-     ======================================================================= */
   function playPrestige() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
+    const t = now();
 
-    // Rising sweep (gyro spin-up)
+    // mechanical sweep up with clicks
     const sweep = ctx.createOscillator();
     sweep.type = "sawtooth";
-    sweep.frequency.setValueAtTime(60, t0);
-    sweep.frequency.exponentialRampToValueAtTime(900, t0 + 1.6);
+    sweep.frequency.setValueAtTime(60, t);
+    sweep.frequency.exponentialRampToValueAtTime(900, t + 1.6);
+    const sf = ctx.createBiquadFilter();
+    sf.type = "lowpass";
+    sf.frequency.setValueAtTime(400, t);
+    sf.frequency.exponentialRampToValueAtTime(4000, t + 1.6);
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(0.0001, t);
+    sg.gain.exponentialRampToValueAtTime(0.35, t + 1.4);
+    sg.gain.exponentialRampToValueAtTime(0.0001, t + 1.9);
+    sweep.connect(sf); sf.connect(sg); sg.connect(sfxGain);
+    sweep.start(t); sweep.stop(t + 2.0);
 
-    const sweepFilter = ctx.createBiquadFilter();
-    sweepFilter.type = "lowpass";
-    sweepFilter.frequency.setValueAtTime(400, t0);
-    sweepFilter.frequency.exponentialRampToValueAtTime(4000, t0 + 1.6);
-
-    const sweepGain = ctx.createGain();
-    sweepGain.gain.setValueAtTime(0.0001, t0);
-    sweepGain.gain.exponentialRampToValueAtTime(0.35, t0 + 1.4);
-    sweepGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.9);
-
-    sweep.connect(sweepFilter);
-    sweepFilter.connect(sweepGain);
-    sweepGain.connect(sfxGain);
-    sweep.start(t0);
-    sweep.stop(t0 + 2.0);
-
-    // Three bell strikes (Vorifex turns)
+    // three bell strikes (the Turning)
     [1.7, 2.15, 2.6].forEach((offset) => {
-      strikeBell(t0 + offset, 520, VOL.prestige * 0.85, 0.55);
+      strikeBell(t + offset, 520, VOL.prestige * 0.85, 0.55);
     });
 
-    // Deep resonance after bells
+    // deep resonance after
     const deep = ctx.createOscillator();
     deep.type = "sine";
     deep.frequency.value = 42;
-    const deepG = ctx.createGain();
-    applyEnvelope(deepG, t0 + 2.9, 0.15, 1.6, VOL.prestige * 0.7);
-    deep.connect(deepG);
-    deepG.connect(sfxGain);
-    deep.start(t0 + 2.9);
-    deep.stop(t0 + 4.8);
+    const dg = ctx.createGain();
+    env(dg, t + 2.9, 0.15, 1.6, VOL.prestige * 0.7);
+    deep.connect(dg); dg.connect(sfxGain);
+    deep.start(t + 2.9); deep.stop(t + 4.8);
+
+    // and switch to Vigil track for 30s
+    if (musicRunning) playVigilFor(30);
   }
 
-  // shared bell helper
   function strikeBell(t, freq, peak, decay) {
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-
-    const harm = ctx.createOscillator();
-    harm.type = "sine";
-    harm.frequency.value = freq * 2.01;
-
-    const harmG = ctx.createGain();
-    harmG.gain.value = 0.35;
-
-    const oscG = ctx.createGain();
-    applyEnvelope(oscG, t, 0.002, decay, peak);
-
-    osc.connect(oscG);
-    harm.connect(harmG);
-    harmG.connect(oscG);
-    oscG.connect(sfxGain);
-
-    osc.start(t); harm.start(t);
-    osc.stop(t + decay + 0.05); harm.stop(t + decay + 0.05);
+    const o1 = ctx.createOscillator(); o1.type = "sine"; o1.frequency.value = freq;
+    const o2 = ctx.createOscillator(); o2.type = "sine"; o2.frequency.value = freq * 2.01;
+    const g2 = ctx.createGain(); g2.gain.value = 0.35;
+    const g = ctx.createGain();
+    env(g, t, 0.002, decay, peak);
+    o1.connect(g);
+    o2.connect(g2); g2.connect(g);
+    g.connect(sfxGain);
+    o1.start(t); o1.stop(t + decay + 0.05);
+    o2.start(t); o2.stop(t + decay + 0.05);
   }
 
-  /* =======================================================================
-     SFX — ACHIEVEMENT UNLOCK (The Ash Mark Ignites)
-     Rising minor-third chime + soft crimson pad.
-     ======================================================================= */
   function playAchievement() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
-    // Two-note chime (minor third)
+    const t = now();
     [440, 523].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      osc.type = "triangle";
-      osc.frequency.value = f;
+      const o = ctx.createOscillator();
+      o.type = "triangle";
+      o.frequency.value = f;
       const g = ctx.createGain();
-      const start = t0 + i * 0.09;
-      applyEnvelope(g, start, 0.005, 0.35, VOL.achievement * 0.7);
-      osc.connect(g);
-      g.connect(sfxGain);
-      osc.start(start);
-      osc.stop(start + 0.4);
+      const s = t + i * 0.09;
+      env(g, s, 0.005, 0.35, VOL.achievement * 0.7);
+      o.connect(g); g.connect(sfxGain);
+      o.start(s); o.stop(s + 0.4);
     });
-
-    // Soft crimson pad underneath
     const pad = ctx.createOscillator();
-    pad.type = "sine";
-    pad.frequency.value = 220;
-    const padG = ctx.createGain();
-    applyEnvelope(padG, t0, 0.08, 1.2, VOL.achievement * 0.35);
-    pad.connect(padG);
-    padG.connect(sfxGain);
-    pad.start(t0);
-    pad.stop(t0 + 1.4);
+    pad.type = "sine"; pad.frequency.value = 220;
+    const pg = ctx.createGain();
+    env(pg, t, 0.08, 1.2, VOL.achievement * 0.35);
+    pad.connect(pg); pg.connect(sfxGain);
+    pad.start(t); pad.stop(t + 1.4);
   }
 
-  /* =======================================================================
-     SFX — WINDOW END (The Lapsed Hour closes)
-     Single descending note.
-     ======================================================================= */
   function playWindowEnd() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(660, t0);
-    osc.frequency.exponentialRampToValueAtTime(330, t0 + 0.4);
+    const t = now();
+    const o = ctx.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(720, t);
+    o.frequency.exponentialRampToValueAtTime(280, t + 0.45);
     const g = ctx.createGain();
-    applyEnvelope(g, t0, 0.02, 0.5, VOL.window);
-    osc.connect(g);
-    g.connect(sfxGain);
-    osc.start(t0);
-    osc.stop(t0 + 0.55);
+    env(g, t, 0.01, 0.5, VOL.windowEnd);
+    o.connect(g); g.connect(sfxGain);
+    o.start(t); o.stop(t + 0.55);
   }
 
-  /* =======================================================================
-     SFX — NEW RECORD (The Lapse)
-     Sub-bass thud + high shimmer.
-     ======================================================================= */
   function playRecord() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
+    const t = now();
     const sub = ctx.createOscillator();
     sub.type = "sine";
-    sub.frequency.setValueAtTime(30, t0);
-    const subG = ctx.createGain();
-    applyEnvelope(subG, t0, 0.01, 0.9, VOL.record);
-    sub.connect(subG);
-    subG.connect(sfxGain);
-    sub.start(t0);
-    sub.stop(t0 + 1.0);
+    sub.frequency.setValueAtTime(30, t);
+    const sg = ctx.createGain();
+    env(sg, t, 0.01, 0.9, VOL.record);
+    sub.connect(sg); sg.connect(sfxGain);
+    sub.start(t); sub.stop(t + 1.0);
 
     const shim = ctx.createOscillator();
     shim.type = "triangle";
-    shim.frequency.setValueAtTime(3200, t0);
-    shim.frequency.exponentialRampToValueAtTime(5200, t0 + 0.6);
-    const shimG = ctx.createGain();
-    applyEnvelope(shimG, t0, 0.05, 0.7, VOL.record * 0.35);
-    shim.connect(shimG);
-    shimG.connect(sfxGain);
-    shim.start(t0);
-    shim.stop(t0 + 0.8);
+    shim.frequency.setValueAtTime(3200, t);
+    shim.frequency.exponentialRampToValueAtTime(5200, t + 0.6);
+    const shg = ctx.createGain();
+    env(shg, t, 0.05, 0.7, VOL.record * 0.35);
+    shim.connect(shg); shg.connect(sfxGain);
+    shim.start(t); shim.stop(t + 0.8);
   }
 
-  /* =======================================================================
-     SFX — SESSION START (The Daily Stilling)
-     Brief low drone, in-and-out, ~2 seconds.
-     ======================================================================= */
   function playSessionStart() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.value = 82;
-
+    const t = now();
+    const o = ctx.createOscillator();
+    o.type = "sine"; o.frequency.value = 82;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(VOL.sessionStart, t0 + 0.9);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.0);
-
-    osc.connect(g);
-    g.connect(sfxGain);
-    osc.start(t0);
-    osc.stop(t0 + 2.1);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(VOL.sessionStart, t + 0.9);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.0);
+    o.connect(g); g.connect(sfxGain);
+    o.start(t); o.stop(t + 2.1);
   }
 
-  /* =======================================================================
-     SFX — BOUND HUNGER (easter egg — 1 in ~1000 taps)
-     A half-second warp — chaotic noise, cutting off.
-     ======================================================================= */
   function playHungerGlitch() {
     if (!initialized || !enabled) return;
     resume();
-    const t0 = now();
-
-    const noise = ctx.createBufferSource();
+    const t = now();
+    const n = ctx.createBufferSource();
     const len = Math.floor(ctx.sampleRate * 0.5);
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const data = buf.getChannelData(0);
+    const b = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = b.getChannelData(0);
     for (let i = 0; i < len; i++) {
-      const env = 1 - i / len;
-      data[i] = (Math.random() * 2 - 1) * env * env;
+      const e = 1 - i / len;
+      d[i] = (Math.random() * 2 - 1) * e * e;
     }
-    noise.buffer = buf;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(400, t0);
-    filter.frequency.exponentialRampToValueAtTime(2800, t0 + 0.3);
-    filter.Q.value = 6;
-
+    n.buffer = b;
+    const f = ctx.createBiquadFilter();
+    f.type = "bandpass";
+    f.frequency.setValueAtTime(400, t);
+    f.frequency.exponentialRampToValueAtTime(2800, t + 0.3);
+    f.Q.value = 6;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(VOL.hunger, t0);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.45);
-
-    noise.connect(filter);
-    filter.connect(g);
-    g.connect(sfxGain);
-    noise.start(t0);
-    noise.stop(t0 + 0.5);
+    g.gain.setValueAtTime(VOL.hunger, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+    n.connect(f); f.connect(g); g.connect(sfxGain);
+    n.start(t); n.stop(t + 0.5);
   }
 
-  /* =======================================================================
-     AMBIENT — THE CHAMBER OF LAPSED HOURS (evolving)
-     Base drone always present. Additional layers added as Prestige rises.
-     Each layer represents a "cadet hall opening" — more voices in the dark.
-     ======================================================================= */
-
-  // Layer thresholds tied to totalPrestiges count
-  const AMBIENT_LAYERS = [
-    { key: "foundation", minPrestige: 0,  build: buildFoundationLayer },
-    { key: "silver",     minPrestige: 1,  build: buildSilverLayer },
-    { key: "iron",       minPrestige: 5,  build: buildIronLayer },
-    { key: "choir",      minPrestige: 15, build: buildChoirLayer },
-    { key: "deep",       minPrestige: 40, build: buildDeepLayer },
-    { key: "hunger",     minPrestige: 100, build: buildHungerLayer }
-  ];
-
-  function startAmbient() {
-    if (!initialized || ambientRunning) return;
-    ambientRunning = true;
-
-    // Shared slow LFO that modulates filter on all layers (breathing)
-    ambientLfo = ctx.createOscillator();
-    ambientLfo.type = "sine";
-    ambientLfo.frequency.value = 0.08; // ~12s cycle
-
-    ambientLfoGain = ctx.createGain();
-    ambientLfoGain.gain.value = 40; // filter swing in Hz
-
-    ambientLfo.connect(ambientLfoGain);
-    ambientLfo.start();
-
-    // Build only the layers the player currently qualifies for
-    refreshAmbientLayers();
-  }
-
-  function stopAmbient() {
-    ambientRunning = false;
-    activeAmbientLayers.clear();
-    for (const n of ambientNodes) {
-      try { n.stop && n.stop(); } catch (e) {}
-      safeDisconnect(n);
-    }
-    ambientNodes = [];
-    if (ambientLfo) { try { ambientLfo.stop(); } catch (e) {} safeDisconnect(ambientLfo); ambientLfo = null; }
-    safeDisconnect(ambientLfoGain); ambientLfoGain = null;
-  }
-
-  function refreshAmbientLayers() {
-    if (!ambientRunning) return;
-    let prestige = 0;
-    try {
-      const st = global.VorifexEngine && global.VorifexEngine.state && global.VorifexEngine.state();
-      prestige = (st && st.totalPrestiges) || 0;
-    } catch (e) { prestige = 0; }
-
-    for (const layer of AMBIENT_LAYERS) {
-      const shouldBeActive = prestige >= layer.minPrestige;
-      const isActive = activeAmbientLayers.has(layer.key);
-      if (shouldBeActive && !isActive) {
-        layer.build();
-        activeAmbientLayers.add(layer.key);
-      }
-      // we do not remove layers once added — the Chamber only grows
-    }
-  }
-
-  // -- Layer builders -----------------------------------------------------
-
-  function makeDroneOsc(freq, type, gainLevel, detuneCents) {
-    const osc = ctx.createOscillator();
-    osc.type = type || "sine";
-    osc.frequency.value = freq;
-    if (detuneCents) osc.detune.value = detuneCents;
-
-    const g = ctx.createGain();
-    g.gain.value = gainLevel;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 400;
-    filter.Q.value = 0.6;
-
-    // connect LFO to filter (if available)
-    if (ambientLfoGain) {
-      try { ambientLfoGain.connect(filter.frequency); } catch (e) {}
-    }
-
-    osc.connect(filter);
-    filter.connect(g);
-    g.connect(ambientGain);
-    osc.start();
-
-    ambientNodes.push(osc, g, filter);
-  }
-
-  function buildFoundationLayer() {
-    // Two low sines, an octave apart, detuned slightly
-    makeDroneOsc(55, "sine", 0.5, -4);
-    makeDroneOsc(110, "sine", 0.3, +6);
-  }
-
-  function buildSilverLayer() {
-    // Sparse high triangle rings
-    const scheduleRing = () => {
-      if (!ambientRunning || activeAmbientLayers.has("silver") === false) return;
-      const t = now();
-      const osc = ctx.createOscillator();
-      osc.type = "triangle";
-      osc.frequency.value = 1400 + Math.random() * 400;
-
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.06, t + 0.4);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 3.5);
-
-      osc.connect(g);
-      g.connect(ambientGain);
-      osc.start(t);
-      osc.stop(t + 3.6);
-    };
-    // schedule first ring and let game loop call refresh — we just do a self-scheduling setInterval
-    const id = setInterval(scheduleRing, 7000);
-    ambientNodes.push({ stop: () => clearInterval(id) });
-  }
-
-  function buildIronLayer() {
-    // A low fifth, pulse through slow filter
-    makeDroneOsc(82, "sawtooth", 0.08, 0);
-    makeDroneOsc(123, "sine", 0.12, +3);
-  }
-
-  function buildChoirLayer() {
-    // Three non-harmonic sines — "distant voices"
-    makeDroneOsc(220, "sine", 0.05, -12);
-    makeDroneOsc(277, "sine", 0.04, +8);
-    makeDroneOsc(330, "sine", 0.03, -5);
-  }
-
-  function buildDeepLayer() {
-    // Very low foundation
-    makeDroneOsc(27.5, "sine", 0.35, 0);
-  }
-
-  function buildHungerLayer() {
-    // Occasional sub-glitch — the Bound Hunger straining
-    const id = setInterval(() => {
-      if (!ambientRunning) return;
-      const t = now();
-      const osc = ctx.createOscillator();
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(40, t);
-      osc.frequency.exponentialRampToValueAtTime(20, t + 0.35);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.08, t + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
-      osc.connect(g);
-      g.connect(ambientGain);
-      osc.start(t);
-      osc.stop(t + 0.5);
-    }, 22000);
-    ambientNodes.push({ stop: () => clearInterval(id) });
-  }
-
-  /* =======================================================================
-     PUBLIC CONTROL
-     ======================================================================= */
+  /* =====================  ENABLE / DISABLE  ===================== */
   function setEnabled(on) {
     enabled = !!on;
     if (masterGain) {
@@ -655,33 +634,16 @@
   function isEnabled() { return enabled; }
   function isInitialized() { return initialized; }
 
-  // Called every frame by game loop — cheaply re-checks whether new ambient
-  // layers should be built (based on Prestige rising during play).
-  let _refreshAccum = 0;
-  function tick(dtSec) {
-    if (!initialized || !ambientRunning) return;
-    _refreshAccum += dtSec;
-    if (_refreshAccum > 4) {
-      _refreshAccum = 0;
-      refreshAmbientLayers();
-    }
-  }
-
-  /* =======================================================================
-     INITIALIZATION — must be called on first user tap
-     ======================================================================= */
+  /* =====================  UNLOCK / START  ===================== */
   function unlockAndStart() {
     if (!init()) return false;
     resume();
-    if (!ambientRunning) startAmbient();
+    if (!musicRunning) startMusic();
     return true;
   }
 
-  /* =======================================================================
-     PUBLIC API
-     ======================================================================= */
+  /* =====================  PUBLIC API  ===================== */
   global.VorifexAudio = {
-    // lifecycle
     unlockAndStart,
     init,
     resume,
@@ -690,7 +652,11 @@
     isEnabled,
     isInitialized,
 
-    // sfx
+    startMusic,
+    stopMusic,
+    playVigilFor,
+
+    // SFX
     playTap,
     playCrit,
     playPurchase,
@@ -701,10 +667,10 @@
     playSessionStart,
     playHungerGlitch,
 
-    // ambient
-    startAmbient,
-    stopAmbient,
-    refreshAmbientLayers
+    // aliases for backward compat
+    startAmbient: startMusic,
+    stopAmbient: stopMusic,
+    refreshAmbientLayers: function () {}
   };
 
 })(typeof window !== "undefined" ? window : globalThis);
